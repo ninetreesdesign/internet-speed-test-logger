@@ -1,0 +1,14 @@
+/* Speed Monitor — skin: indigo (default)
+   Deep indigo/navy dark theme with gold accents.
+   To create a new skin: copy this file, rename it skin-<name>.css,
+   and change the variable values. Then set SKIN = '<name>' in speed_monitor.html. */
+
+:root {
+  --bg:    #1e1560; --bg2: #1a1450; --bg3: #150f40;
+  --bdr:   #0a0828; --bdr2: #3a3280;
+  --gold:  #c8a020; --gold-h: #e8d060; --btntxt: #100c00;
+  --txt:   #c8c4e8; --dim: #6860a8; --lbl: #a09cd0;
+  --ok:    #80d8a0; --fail: #e09090; --div: #3a2e90;
+  --dot:   #60e090; --stxt: #8880c8;
+  --ping-ok: #7878b8; --ping-fail: #e09090;
+}

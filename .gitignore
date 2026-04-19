@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+.AppleDouble
+
+# Dropbox
+.dropbox
+desktop.ini
+Icon?
+
+# CSV log exports (large data files, managed outside git)
+speedtest_logs/
+speedtest_prefs.txt
+
+# LiveCode companion app prefs (not part of HTML app)
+speedtest_prefs.txt
