@@ -467,7 +467,7 @@ let pingTimer=null, testTimer=null, cdTimer=null;
 let nextPingAt=null, nextTestAt=null;
 let retryMode=false, retryCount=0;
 let lastPingOk=true;
-let testDueAt=null;   // absolute time when next full test should fire
+let fullTestDueEpoch=null;   // absolute time when next full test should fire
 
 // ── prefs ─────────────────────────────────────────
 const loadPrefs = ()=>{ try{return JSON.parse(localStorage.getItem(PREFS)||'{}')}catch{return{}} };
@@ -642,8 +642,8 @@ function scheduleTest(delayMins){
   clearTimeout(testTimer);
   const ms=delayMins*60*1000;
   nextTestAt=Date.now()+ms;
-  // testDueAt is an absolute epoch checked on each ping success; cleared once the test fires
-  testDueAt=nextTestAt;
+  // fullTestDueEpoch is an absolute epoch checked on each ping success; cleared once the test fires
+  fullTestDueEpoch=nextTestAt;
 }
 
 function startSchedules(){
@@ -669,8 +669,8 @@ async function timedFetch(url,opts={}){
 async function runPingCheck(){
   if(testing||paused) return;
   // skip standalone ping if full test is due now or within the next ping interval
-  if(testDueAt&&(testDueAt-Date.now())<=getPingInterval()*60000){
-    testDueAt=null;
+  if(fullTestDueEpoch&&(fullTestDueEpoch-Date.now())<=getPingInterval()*60000){
+    fullTestDueEpoch=null;
     await runFullTest();
     scheduleTest(getTestInterval());
     schedulePing(getPingInterval());
@@ -695,8 +695,8 @@ async function runPingCheck(){
     if(wasInRetry) addStateEvent('RECOVERED');
     addEntry({_t:'ping',timestamp:ts,machine,os,platform,conn_type:conn,
               status:'ok',ping_ms:ping,download_mbps:'',upload_mbps:'',note:''});
-    if(testDueAt&&Date.now()>=testDueAt){
-      testDueAt=null;
+    if(fullTestDueEpoch&&Date.now()>=fullTestDueEpoch){
+      fullTestDueEpoch=null;
       await runFullTest();
       scheduleTest(getTestInterval());
     }
@@ -798,7 +798,7 @@ async function runFullTest(){
 // manual "Full Test" button
 async function runManualTest(){
   if(testing||paused) return;
-  clearTimeout(testTimer); testDueAt=null;
+  clearTimeout(testTimer); fullTestDueEpoch=null;
   await runFullTest();
   scheduleTest(getTestInterval());
 }
@@ -1153,6 +1153,38 @@ function parseCSVLine(line){
 }
 
 // ── CSV import ────────────────────────────────────
+
+// v1.6 schema: date,time,machine,os,conn_type,iface_name,status,ping_ms,dl,ul,note
+function parseRowV16(p){
+  let [date,time,machine,os,conn_type,iface_name,status,ping_ms,download_mbps,upload_mbps,note]=p;
+  return {date,time,machine,os,platform:os,conn_type,iface_name,status,ping_ms,download_mbps,upload_mbps,note};
+}
+
+// current schema: timestamp,dl,ul,ping,machine,browser,iface,result
+function parseRowCurrent(p){
+  const [ts,dl,ul,pm,mach,browser,iface,result]=p;
+  const d=parseTS(ts);
+  return {
+    date:d?fmtDateOnly(d):ts, time:d?fmtTimeOnly(d):'',
+    machine:mach, os:browser, platform:browser,
+    conn_type:iface, iface_name:'',
+    download_mbps:dl, upload_mbps:ul, ping_ms:pm,
+    status:(result&&result.trim())?'fail':'ok', note:result||''
+  };
+}
+
+// v1.x schema: timestamp,machine,iface_type,iface_name,status,ping_ms,dl,ul,note
+function parseRowV1x(p){
+  const d=parseTS(p[0]);
+  return {
+    date:d?fmtDateOnly(d):p[0], time:d?fmtTimeOnly(d):'',
+    machine:p[1]||'', os:'', platform:'',
+    conn_type:p[2]||'', iface_name:p[3]||'',
+    status:p[4]||'fail', ping_ms:p[5]||'',
+    download_mbps:p[6]||'', upload_mbps:p[7]||'', note:p[8]||''
+  };
+}
+
 function importCSV(txt){
   const lines=txt.split('\n');
   const seen=new Set(logs.filter(e=>e._t==='data'||e._t==='ping')
@@ -1164,38 +1196,25 @@ function importCSV(txt){
     if(line.startsWith('timestamp,')) continue;  // v1.x / current header
     if(line.startsWith('#')){ logs.push({_t:'evt',_txt:line}); added++; continue; }
     const p=parseCSVLine(line); if(p.length<7) continue;
-    let date,time,machine,os,platform,conn_type,iface_name,status,ping_ms,download_mbps,upload_mbps,note;
-    if(p[0].match(/^\d+\/\d+\/\d+$/)&&p[1].match(/^\d+:\d+/)){
-      // v1.6: date,time,machine,os,conn_type,iface_name,status,ping_ms,dl,ul,note
-      [date,time,machine,os,conn_type,iface_name,status,ping_ms,download_mbps,upload_mbps,note]=p;
-      platform=os;
-    } else if(p[0].match(/\d+\/\d+\/\d+\s+\d+:\d+/)&&(p[1]===''||!isNaN(parseFloat(p[1])))){
-      // current: timestamp,dl,ul,ping,machine,browser,iface,result
-      const [ts,dl,ul,pm,mach,browser,iface,result]=p;
-      const d=parseTS(ts); date=d?fmtDateOnly(d):ts; time=d?fmtTimeOnly(d):'';
-      download_mbps=dl; upload_mbps=ul; ping_ms=pm;
-      machine=mach; platform=browser; os=browser; conn_type=iface; iface_name='';
-      status=(result&&result.trim())?'fail':'ok'; note=result||'';
-    } else {
-      // v1.x: timestamp,machine,iface_type,iface_name,status,ping_ms,dl,ul,note
-      const ts=p[0]; machine=p[1]||''; const iface_type=p[2]||'';
-      iface_name=p[3]||''; status=p[4]||'fail'; ping_ms=p[5]||'';
-      download_mbps=p[6]||''; upload_mbps=p[7]||''; note=p[8]||'';
-      const d=parseTS(ts); date=d?fmtDateOnly(d):ts; time=d?fmtTimeOnly(d):'';
-      os=''; platform=''; conn_type=iface_type;
-    }
-    const timestamp=`${date} ${time}`.trim();
-    const key=timestamp+'|'+(machine||'');
+    let r;
+    if(p[0].match(/^\d+\/\d+\/\d+$/)&&p[1].match(/^\d+:\d+/))
+      r=parseRowV16(p);
+    else if(p[0].match(/\d+\/\d+\/\d+\s+\d+:\d+/)&&(p[1]===''||!isNaN(parseFloat(p[1]))))
+      r=parseRowCurrent(p);
+    else
+      r=parseRowV1x(p);
+    const timestamp=`${r.date} ${r.time}`.trim();
+    const key=timestamp+'|'+(r.machine||'');
     if(seen.has(key)) continue; seen.add(key);
-    const isPing=(!download_mbps&&!upload_mbps)&&
-      (ping_ms||((note||'').toLowerCase().includes('ping')));
+    const isPing=(!r.download_mbps&&!r.upload_mbps)&&
+      (r.ping_ms||((r.note||'').toLowerCase().includes('ping')));
     logs.push({
       _t:isPing?'ping':'data',
-      timestamp,machine:machine||'',os:os||'',platform:platform||os||'',
-      conn_type:conn_type||'',iface_name:iface_name||'',
-      status:status||'fail',ping_ms:ping_ms||'',
-      download_mbps:download_mbps||'',upload_mbps:upload_mbps||'',
-      note:(note||'').slice(0,28)
+      timestamp,machine:r.machine||'',os:r.os||'',platform:r.platform||r.os||'',
+      conn_type:r.conn_type||'',iface_name:r.iface_name||'',
+      status:r.status||'fail',ping_ms:r.ping_ms||'',
+      download_mbps:r.download_mbps||'',upload_mbps:r.upload_mbps||'',
+      note:(r.note||'').slice(0,28)
     });
     added++;
   }
@@ -1226,7 +1245,7 @@ document.getElementById('btnNow').onclick=()=>runManualTest();
 document.getElementById('btnPing').onclick=()=>{ if(!testing&&!paused) runPingCheck(); };
 document.getElementById('btnPingToggle').onclick=()=>setPingVisible(!pingVisible);
 document.getElementById('btnStop').onclick=()=>{
-  clearAllTimers(); nextPingAt=null; nextTestAt=null; testDueAt=null;
+  clearAllTimers(); nextPingAt=null; nextTestAt=null; fullTestDueEpoch=null;
   paused=true;
   document.getElementById('btnPR').textContent='Resume ▶';
   addStateEvent('PAUSED');
