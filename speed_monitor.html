@@ -360,9 +360,11 @@ input[type=file]{display:none}
     <p style="font-size:10px;color:var(--dim)">Requires the local server to be running first (see below). <code>file://</code> URLs will not work -- the speed test API requires a server origin.</p>
 
     <h3>Starting the server</h3>
-    <p><b>Mac:</b> double-click <code>_start_monitor.command</code>, or in Terminal:<br>
-    <code>python3 -m http.server 8765 --directory "/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log"</code><br>
-    <b>Windows:</b> double-click <code>_start_monitor.bat</code></p>
+    <p><b>Mac / Linux:</b> in Terminal:<br>
+    <code>cd ~/Dropbox/Internet\ Speed\ Test\ Log &amp;&amp; python3 -m http.server 8765</code><br>
+    <b>Windows:</b> in Command Prompt:<br>
+    <code>cd "%USERPROFILE%\Dropbox\Internet Speed Test Log" &amp;&amp; python -m http.server 8765</code><br>
+    Then open <code>http://localhost:8765/speed_monitor.html</code></p>
 
     <h3>First use on a new machine</h3>
     <p>1. Enter a machine name (top-left field) -- labels all log rows from this device<br>
@@ -376,7 +378,7 @@ input[type=file]{display:none}
       <tr><td>Stop</td><td>Halt without closing the page</td></tr>
       <tr><td>Export</td><td>Download CSV log file</td></tr>
       <tr><td>Import</td><td>Load existing CSV to merge history</td></tr>
-      <tr><td>Drop zone</td><td>Drag a CSV onto the chart strip to import</td></tr>
+      <tr><td>Drop zone</td><td>Drag a CSV onto the log area to import</td></tr>
     </table>
 
     <h3>Log row symbols</h3>
@@ -389,7 +391,7 @@ input[type=file]{display:none}
     <p>Click any row for full detail popup.</p>
 
     <h3>Scheduling</h3>
-    <p>Ping check runs every N min (default 5). Full speed test runs every M min (default 15) but only fires after a successful ping. On ping failure: retries every 1 min up to 5x, logs OFFLINE / RECOVERED events, then reverts to normal schedule.</p>
+    <p>Ping check runs every N min (default 15). Full speed test runs every M min (default 30) but only fires after a successful ping. On ping failure: retries every 1 min up to 5x, logs OFFLINE / RECOVERED events, then reverts to normal schedule.</p>
 
     <h3>Data</h3>
     <p>Saved in browser localStorage -- persists across restarts. Export CSV regularly to keep a permanent copy. Log files named <code>speedtest_&lt;machine&gt;_&lt;year&gt;-Q&lt;n&gt;.csv</code> -- one per machine per quarter.</p>
@@ -428,6 +430,7 @@ const MAX_RETRIES         = 5;
 const FULL_TEST_PASSES  = 3;
 const PING_PROBE_COUNT  = 5;   // probes per full-test ping (median)
 const PING_QUICK_COUNT  = 3;   // probes for standalone ping check
+// Numeric separators (1_000_000) require ES2021: Chrome 75+, Firefox 70+, Safari 13+, Edge 75+
 const DOWNLOAD_SIZES    = [500_000, 2_000_000, 5_000_000, 10_000_000, 25_000_000]; // bytes
 const UPLOAD_SIZES      = [500_000, 2_000_000, 5_000_000];
 
@@ -541,6 +544,7 @@ function getTestInterval(){
   return (!isNaN(v)&&v>0)?v:DEFAULT_TEST_MINS;
 }
 function getConnType(){
+  // Network Information API: Chrome/Edge only — not supported in Firefox or Safari
   const c=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
   if(!c) return 'cable';   // no API (Firefox/Safari) — assume cable
   const t=c.type||'',et=c.effectiveType||'';
@@ -638,7 +642,8 @@ function scheduleTest(delayMins){
   clearTimeout(testTimer);
   const ms=delayMins*60*1000;
   nextTestAt=Date.now()+ms;
-  testDueAt=nextTestAt; // stays set until ping success sees it and fires the test
+  // testDueAt is an absolute epoch checked on each ping success; cleared once the test fires
+  testDueAt=nextTestAt;
 }
 
 function startSchedules(){
