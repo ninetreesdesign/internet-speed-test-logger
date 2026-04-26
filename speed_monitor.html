@@ -473,9 +473,12 @@ const COL_PING      = '#c8b060';  // ping points
 const COL_PING_LINE = '#906010';  // ping line
 const COL_FAIL      = '#e09090';  // failed test / dropout points (matches --fail)
 
+const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
 let logs=[], paused=false, testing=false;
 let chartSpeed=null;
-let chartWindowMs = 24 * HOUR_MS;  // default: last 24 hours
+let chartWindowMs = 24 * HOUR_MS;       // selected window (0 = All)
+let chartEffectiveWindowMs = 24*HOUR_MS; // actual span used for tick logic (resolved from data for All)
 let activePopup=null;
 let chartTickStep = 6 * HOUR_MS;
 
@@ -985,11 +988,13 @@ function updateStats(){
 
 // ── chart tick step (dynamic by window) ──────────
 function chartTickStepFor(windowMs){
-  if(windowMs <=       HOUR_MS) return 15*60000;       // 1h  → 15 min ticks, H:MM labels
-  if(windowMs <=  12*HOUR_MS)   return HOUR_MS;        // 12h → 1h ticks, H:00 + date at midnight
-  if(windowMs <=  24*HOUR_MS)   return  3*HOUR_MS;     // 1d  → 3h ticks, H:00 + date at midnight
-  if(windowMs <=   7*24*HOUR_MS) return  3*HOUR_MS;    // 7d  → 3h ticks, date label at midnight only
-  return 24*HOUR_MS;                                    // 30d → 1d ticks, date label every 3d
+  if(windowMs <=        HOUR_MS) return 15*60000;       // 1h   → 15 min ticks
+  if(windowMs <=   12*HOUR_MS)   return HOUR_MS;        // 12h  → 1h ticks
+  if(windowMs <=   24*HOUR_MS)   return  3*HOUR_MS;     // 1d   → 3h ticks
+  if(windowMs <=  7*24*HOUR_MS)  return  3*HOUR_MS;     // 7d   → 3h ticks, date at midnight
+  if(windowMs <= 30*24*HOUR_MS)  return 24*HOUR_MS;     // 30d  → daily ticks, label every 3d
+  if(windowMs <= 90*24*HOUR_MS)  return 24*HOUR_MS;     // 90d  → daily ticks, label every 7d
+  return 7*24*HOUR_MS;                                   // >90d → weekly ticks, label every 2w
 }
 
 // ── charts — full tests only ──────────────────────
@@ -1042,25 +1047,39 @@ function initCharts(){
              const d=new Date(ms);
              const h=d.getHours(), m=d.getMinutes();
              const dateStr=`${d.getMonth()+1}/${d.getDate()}`;
+             const dayStr=DAYS[d.getDay()];
              const atMidnight=(h===0&&m===0);
-             if(chartWindowMs<=HOUR_MS)
-               return `${h}:${String(m).padStart(2,'0')}`;          // 1h:  H:MM every 15 min
-             if(chartWindowMs<=24*HOUR_MS)
-               return atMidnight?dateStr:`${h}:00`;                  // 12h/1d: H:00, date at midnight
-             if(chartWindowMs<=7*24*HOUR_MS)
-               return atMidnight?dateStr:'';                          // 7d: date at midnight, blank ticks
-             // 30d: date label every 3 calendar days at midnight
-             return (atMidnight&&Math.floor(ms/(24*HOUR_MS))%3===0)?dateStr:'';
+             const ew=chartEffectiveWindowMs;
+             if(ew<=HOUR_MS)
+               return `${h}:${String(m).padStart(2,'0')}`;           // 1h: H:MM only
+             if(ew<=24*HOUR_MS)
+               return atMidnight?[dateStr,dayStr]:`${h}:00`;         // 12h/1d: H:00, date+day at midnight
+             if(ew<=7*24*HOUR_MS)
+               return atMidnight?[dateStr,dayStr]:'';                 // 7d: date+day at midnight, blank ticks
+             if(ew<=30*24*HOUR_MS)
+               return (atMidnight&&Math.floor(ms/(24*HOUR_MS))%3===0)?[dateStr,dayStr]:'';  // 30d: every 3d
+             if(ew<=90*24*HOUR_MS)
+               return (atMidnight&&Math.floor(ms/(24*HOUR_MS))%7===0)?[dateStr,dayStr]:'';  // 90d: every 7d
+             return (atMidnight&&Math.floor(ms/(7*24*HOUR_MS))%2===0)?[dateStr,dayStr]:'';  // >90d: every 2w
            }
          },
          afterBuildTicks(axis){
            const step=chartTickStep;
-           const lo=Math.ceil(axis.min/step)*step;
+           // Anchor to local midnight so ticks land on clean local hours (3:00, 6:00, 9:00…)
+           // rather than UTC epoch multiples which are offset by the local timezone
+           const midnight=new Date(); midnight.setHours(0,0,0,0);
+           let t0=midnight.getTime();
+           while(t0>axis.min) t0-=step;  // step back before window start
+           while(t0<axis.min) t0+=step;  // step forward to first tick in window
            const ticks=[];
-           for(let t=lo;t<=axis.max;t+=step) ticks.push({value:t});
+           for(let t=t0;t<=axis.max;t+=step) ticks.push({value:t});
            axis.ticks=ticks;
          },
-         grid:{color:gc}},
+         afterFit(scale){ scale.height=42; }, // fixed height — reserves space for 2-line labels on all windows
+         grid:{
+           lineWidth: ctx=>new Date(ctx.tick.value).getHours()===0?2:1,
+           color: ctx=>new Date(ctx.tick.value).getHours()===0?'rgba(120,100,220,.9)':'rgba(58,46,144,.6)'
+         }},
       yS:{position:'left',grid:{color:gc},ticks:{color:tc,font:{size:10}},
           min:0,max:CHART_Y_MAX,title:{display:true,text:'Mb/s',color:tc,font:{size:10}}},
       yP:{display:false,position:'right',grid:{drawOnChartArea:false},
@@ -1125,7 +1144,8 @@ function updateCharts(){
     const xMax=Date.now(); // right edge = now, so newest point never clips
     const spanH=(xMax-xMin)/3600000;
     // ticks: 6h step always — gives 4 ticks/day; each tick shows HH:00 or M/D at midnight
-    chartTickStep=chartTickStepFor(chartWindowMs!==CHART_WINDOW_ALL?chartWindowMs:xMax-xMin);
+    chartEffectiveWindowMs=chartWindowMs!==CHART_WINDOW_ALL?chartWindowMs:xMax-xMin;
+    chartTickStep=chartTickStepFor(chartEffectiveWindowMs);
     chartSpeed.options.scales.x.min=xMin;
     chartSpeed.options.scales.x.max=xMax;
     chartSpeed.options.scales.x.ticks.stepSize=chartTickStep;
