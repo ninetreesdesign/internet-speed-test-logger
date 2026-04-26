@@ -985,11 +985,11 @@ function updateStats(){
 
 // ── chart tick step (dynamic by window) ──────────
 function chartTickStepFor(windowMs){
-  if(windowMs <=       HOUR_MS) return 15*60000;        // 1h  → 15 min ticks
-  if(windowMs <=  12*HOUR_MS)   return HOUR_MS;         // 12h → 1h ticks
-  if(windowMs <=  24*HOUR_MS)   return  3*HOUR_MS;      // 1d  → 3h ticks
-  if(windowMs <=   7*24*HOUR_MS) return 12*HOUR_MS;     // 7d  → 12h ticks
-  return 3*24*HOUR_MS;                                   // 30d+ → 3d ticks
+  if(windowMs <=       HOUR_MS) return 15*60000;       // 1h  → 15 min ticks, H:MM labels
+  if(windowMs <=  12*HOUR_MS)   return HOUR_MS;        // 12h → 1h ticks, H:00 + date at midnight
+  if(windowMs <=  24*HOUR_MS)   return  3*HOUR_MS;     // 1d  → 3h ticks, H:00 + date at midnight
+  if(windowMs <=   7*24*HOUR_MS) return  3*HOUR_MS;    // 7d  → 3h ticks, date label at midnight only
+  return 24*HOUR_MS;                                    // 30d → 1d ticks, date label every 3d
 }
 
 // ── charts — full tests only ──────────────────────
@@ -1012,17 +1012,17 @@ function initCharts(){
      borderColor:COL_PING_LINE,backgroundColor:'rgba(144,96,16,.04)',
      pointBackgroundColor:COL_PING,pointBorderColor:COL_PING,
      pointStyle:ptStyle,pointRadius:ptR,pointHoverRadius:ptRH,
-     tension:.2,borderWidth:1},
+     tension:0,borderWidth:1},
     {label:'Download Mb/s',data:[],yAxisID:'yS',
      borderColor:COL_DOWN_LINE,backgroundColor:'rgba(74,122,96,.06)',
      pointBackgroundColor:COL_DOWN,pointBorderColor:COL_DOWN,
      pointStyle:ptStyle,pointRadius:ptR,pointHoverRadius:ptRH,
-     tension:.2,borderWidth:1},
+     tension:0,borderWidth:1},
     {label:'Upload Mb/s',data:[],yAxisID:'yS',
      borderColor:COL_UP_LINE,backgroundColor:'rgba(96,96,168,.06)',
      pointBackgroundColor:COL_UP,pointBorderColor:COL_UP,
      pointStyle:ptStyle,pointRadius:ptR,pointHoverRadius:ptRH,
-     tension:.2,borderWidth:1},
+     tension:0,borderWidth:1},
   ]},options:{
     animation:false,
     plugins:{legend:{labels:{
@@ -1041,9 +1041,16 @@ function initCharts(){
            callback(ms){
              const d=new Date(ms);
              const h=d.getHours(), m=d.getMinutes();
-             if(h===0&&m===0) return `${d.getMonth()+1}/${d.getDate()}`;
-             if(chartWindowMs<=HOUR_MS) return `${h}:${String(m).padStart(2,'0')}`;
-             return `${h}:00`;
+             const dateStr=`${d.getMonth()+1}/${d.getDate()}`;
+             const atMidnight=(h===0&&m===0);
+             if(chartWindowMs<=HOUR_MS)
+               return `${h}:${String(m).padStart(2,'0')}`;          // 1h:  H:MM every 15 min
+             if(chartWindowMs<=24*HOUR_MS)
+               return atMidnight?dateStr:`${h}:00`;                  // 12h/1d: H:00, date at midnight
+             if(chartWindowMs<=7*24*HOUR_MS)
+               return atMidnight?dateStr:'';                          // 7d: date at midnight, blank ticks
+             // 30d: date label every 3 calendar days at midnight
+             return (atMidnight&&Math.floor(ms/(24*HOUR_MS))%3===0)?dateStr:'';
            }
          },
          afterBuildTicks(axis){
