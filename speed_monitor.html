@@ -5,8 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Speed Monitor</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-<link id="themeLink" rel="stylesheet" href="">
 <style>
+:root {
+  --bg:    #1e1560; --bg2: #1a1450; --bg3: #150f40;
+  --bdr:   #0a0828; --bdr2: #3a3280;
+  --gold:  #c8a020; --gold-h: #e8d060; --btntxt: #100c00;
+  --txt:   #c8c4e8; --dim: #6860a8; --lbl: #a09cd0;
+  --ok:    #80d8a0; --fail: #e09090; --div: #3a2e90;
+  --dot:   #60e090; --stxt: #8880c8;
+  --ping-ok: #7878b8; --ping-fail: #e09090;
+}
 *{box-sizing:border-box;margin:0;padding:0}
 html{height:100%;background:var(--bg)}
 body{
@@ -16,8 +24,8 @@ body{
   max-width:880px;min-width:360px;margin:0 auto
 }
 
-/* ── phone layout (≤500px) ── */
-@media(max-width:500px){
+/* ── narrow layout (≤580px) ── */
+@media(max-width:580px){
   body{font-size:10px;min-width:0}
   .r-ts,.col-ts{width:80px}
   .r-down,.col-down{width:46px}
@@ -25,7 +33,15 @@ body{
   .r-ping,.col-ping{width:44px}
   .r-net,.col-net{min-width:0}
   #log{font-size:10px}
-  .chart-strip{flex-wrap:wrap;gap:6px}
+  .chart-strip{flex-wrap:wrap;gap:5px}
+  /* hide secondary stats when space is tight */
+  #avPings, #avTests{display:none}
+  #rangeLabel{display:none}
+}
+/* ── phone layout (≤420px) ── */
+@media(max-width:420px){
+  .bar-sep{display:none}
+  #avUptime{display:none}
 }
 
 /* ── toolbar ── */
@@ -35,11 +51,11 @@ body{
   border-bottom:2px solid var(--div);flex-shrink:0
 }
 .bar-row1{display:flex;align-items:center;gap:6px}
-.bar-row2{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
+.bar-row2{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 /* 2x2 grid: top=interval labels+inputs, bottom=action gold btns */
 .bar-igroup{
   display:grid;grid-template-columns:auto auto;
-  column-gap:10px;row-gap:4px;align-items:center
+  column-gap:6px;row-gap:4px;align-items:center
 }
 .bar-sep{width:1px;height:28px;background:var(--div);flex-shrink:0;margin:0 2px}
 /* 3-col grid: [Pause][Export][?] / [Stop][Import][ ] */
@@ -169,8 +185,8 @@ body{
   display:flex;justify-content:space-between;align-items:center;flex-shrink:0
 }
 .ctit-range{color:var(--dim);font-size:8px}
-.cbox canvas{flex:1;min-height:0;width:100%}
-canvas{display:block}
+.cbox canvas{flex:1;min-height:0;width:100%;background:var(--bg2)}
+canvas{display:block;background:var(--bg2)}
 
 /* chart window selector */
 .win-row{display:flex;gap:3px;margin-right:6px}
@@ -455,6 +471,7 @@ const COL_UP        = '#a0a0e0';  // upload points
 const COL_UP_LINE   = '#6060a8';  // upload line
 const COL_PING      = '#c8b060';  // ping points
 const COL_PING_LINE = '#906010';  // ping line
+const COL_FAIL      = '#e09090';  // failed test / dropout points (matches --fail)
 
 let logs=[], paused=false, testing=false;
 let chartSpeed=null;
@@ -576,7 +593,19 @@ async function refreshNetMeta(){
     }
     if(ip) lastKnownIp=ip;
     cachedMeta=meta; renderNetDisplay();
-  }catch{ renderNetDisplay(); }
+  }catch{
+    // Fallback: Cloudflare CDN trace returns plain text ip= line, open CORS
+    try{
+      const txt=await fetch('https://www.cloudflare.com/cdn-cgi/trace',{cache:'no-store'}).then(r=>r.text());
+      const ip=(txt.match(/(?:^|\n)ip=([^\n]+)/)||[])[1]?.trim()||'';
+      if(ip){
+        if(lastKnownIp&&ip!==lastKnownIp){ addStateEvent('NETWORK-CHANGED'); if(!testing&&!paused) runPingCheck(); }
+        if(ip) lastKnownIp=ip;
+        cachedMeta={clientIp:ip,asOrganization:''};
+      }
+    }catch{}
+    renderNetDisplay();
+  }
 }
 function renderNetDisplay(){
   const conn=getConnType();
@@ -1037,19 +1066,21 @@ function initCharts(){
 }
 
 function getChartRecords(){
-  const ok=logs.filter(e=>e._t==='data'&&e.status==='ok');
-  if(!ok.length) return [];
-  if(chartWindowMs===CHART_WINDOW_ALL) return ok;
+  // includes failed entries so dropouts plot as y=0
+  const all=logs.filter(e=>e._t==='data');
+  if(!all.length) return [];
+  if(chartWindowMs===CHART_WINDOW_ALL) return all;
   const cutoff=Date.now()-chartWindowMs;
-  const windowed=ok.filter(e=>{ const d=parseTS(e.timestamp); return d&&d.getTime()>=cutoff; });
-  return windowed.length?windowed:ok.slice(-1);
+  const windowed=all.filter(e=>{ const d=parseTS(e.timestamp); return d&&d.getTime()>=cutoff; });
+  return windowed.length?windowed:all.slice(-1);
 }
 function getPingOnlyRecords(){
-  const ok=logs.filter(e=>e._t==='ping'&&e.status==='ok');
-  if(!ok.length) return [];
-  if(chartWindowMs===CHART_WINDOW_ALL) return ok;
+  // includes failed pings so dropouts plot at CHART_Y_MAX
+  const pings=logs.filter(e=>e._t==='ping');
+  if(!pings.length) return [];
+  if(chartWindowMs===CHART_WINDOW_ALL) return pings;
   const cutoff=Date.now()-chartWindowMs;
-  return ok.filter(e=>{ const d=parseTS(e.timestamp); return d&&d.getTime()>=cutoff; });
+  return pings.filter(e=>{ const d=parseTS(e.timestamp); return d&&d.getTime()>=cutoff; });
 }
 
 function updateCharts(){
@@ -1059,9 +1090,26 @@ function updateCharts(){
     const da=parseTS(a.timestamp),db=parseTS(b.timestamp);
     return (da?da.getTime():0)-(db?db.getTime():0);
   });
-  const pingPts=pingRec.map(e=>{ const d=parseTS(e.timestamp); const v=parseFloat(e.ping_ms); return d&&!isNaN(v)?{x:d.getTime(),y:Math.min(300,v)}:null; }).filter(Boolean);
-  const downPts=rec.map(e=>{ const d=parseTS(e.timestamp); const v=parseFloat(e.download_mbps); return d&&!isNaN(v)?{x:d.getTime(),y:Math.min(300,v)}:null; }).filter(Boolean);
-  const upPts  =rec.map(e=>{ const d=parseTS(e.timestamp); const v=parseFloat(e.upload_mbps);   return d&&!isNaN(v)?{x:d.getTime(),y:Math.min(300,v)}:null; }).filter(Boolean);
+  // ping: ok entries use measured ms; failed pings spike to top of scale (visible dropout)
+  const pingPts=[], pingColors=[];
+  for(const e of pingRec){
+    const d=parseTS(e.timestamp); if(!d) continue;
+    const ok=e.status==='ok';
+    const v=ok?parseFloat(e.ping_ms):CHART_Y_MAX;
+    if(isNaN(v)) continue;
+    pingPts.push({x:d.getTime(),y:Math.min(CHART_Y_MAX,v)});
+    pingColors.push(ok?COL_PING:COL_FAIL);
+  }
+  // speed: ok entries use measured Mb/s; failed tests plot at zero (dropout trough)
+  const downPts=[], downColors=[], upPts=[], upColors=[];
+  for(const e of rec){
+    const d=parseTS(e.timestamp); if(!d) continue;
+    const ok=e.status==='ok';
+    downPts.push({x:d.getTime(), y:ok?Math.min(CHART_Y_MAX,parseFloat(e.download_mbps)||0):0});
+    downColors.push(ok?COL_DOWN:COL_FAIL);
+    upPts.push({x:d.getTime(), y:ok?Math.min(CHART_Y_MAX,parseFloat(e.upload_mbps)||0):0});
+    upColors.push(ok?COL_UP:COL_FAIL);
+  }
   // set x axis range to span of data (or last 500-pt window)
   const allX=[...downPts.map(p=>p.x)];
   if(allX.length>=1){
@@ -1081,8 +1129,14 @@ function updateCharts(){
   }
   chartSpeed.data.labels=[];
   chartSpeed.data.datasets[0].data=pingPts;
+  chartSpeed.data.datasets[0].pointBackgroundColor=pingColors;
+  chartSpeed.data.datasets[0].pointBorderColor=pingColors;
   chartSpeed.data.datasets[1].data=downPts;
+  chartSpeed.data.datasets[1].pointBackgroundColor=downColors;
+  chartSpeed.data.datasets[1].pointBorderColor=downColors;
   chartSpeed.data.datasets[2].data=upPts;
+  chartSpeed.data.datasets[2].pointBackgroundColor=upColors;
+  chartSpeed.data.datasets[2].pointBorderColor=upColors;
   chartSpeed.update();
 }
 
@@ -1336,7 +1390,6 @@ function applyChartHeight(h){
 
 // ── init ──────────────────────────────────────────
 function init(){
-  document.getElementById('themeLink').href=`themes/theme-${THEME}.css`;
   const prefs=loadPrefs();
   if(prefs.machine_label) document.getElementById('fldName').value=prefs.machine_label;
   logs=loadLogs();
@@ -1348,6 +1401,10 @@ function init(){
     runPingCheck();   // immediate ping on load; full test only fires at scheduled interval
   });
   setInterval(refreshNetMeta, 120000);
+  // Slide chart x-axis right edge to now even when no new data arrives
+  setInterval(updateCharts, 60_000);
+  // Refresh immediately when tab becomes visible (glancing at monitor screen)
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) updateCharts(); });
 }
 init();
 </script>
