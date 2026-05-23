@@ -93,6 +93,14 @@ body{
   border-radius:3px;padding:3px 7px;font-size:11px;min-width:120px;max-width:260px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1
 }
+/* ── URL monitor panel ── */
+.url-panel{display:flex;flex-direction:column;gap:3px;flex-shrink:0}
+.url-row{display:flex;align-items:center;gap:5px}
+.url-input{width:148px;font-size:10px;padding:2px 5px}
+.url-status{font-size:10px;min-width:100px;white-space:nowrap;color:var(--dim)}
+.url-up{color:var(--ok)}
+.url-down{color:var(--fail)}
+
 .aux-row{display:flex;align-items:center;gap:4px}
 .sep{color:var(--bdr2);margin:0 2px}
 
@@ -271,13 +279,13 @@ input[type=file]{display:none}
     <div class="bar-igroup">
       <div class="aux-row">
         <span class="lbl">Ping</span>
-        <input class="ifield" id="fldPingInterval" type="text" inputmode="decimal" value="5"
+        <input class="ifield" id="fldPingInterval" type="text" inputmode="decimal" value="15"
                style="width:38px;text-align:right" onfocus="this.select()" title="Ping check interval (minutes)">
         <span class="lbl">min</span>
       </div>
       <div class="aux-row">
         <span class="lbl">Full Test</span>
-        <input class="ifield" id="fldTestInterval" type="text" inputmode="decimal" value="15"
+        <input class="ifield" id="fldTestInterval" type="text" inputmode="decimal" value="30"
                style="width:38px;text-align:right" onfocus="this.select()" title="Full speed test interval (minutes)">
         <span class="lbl">min</span>
       </div>
@@ -292,6 +300,25 @@ input[type=file]{display:none}
       <button class="btn btn-sm btn-stop"  id="btnStop">Stop</button>
       <label  class="btn btn-dim" for="fileIn" style="cursor:pointer" title="Import CSV log">&#11014; Import</label>
       <input  type="file" id="fileIn" accept=".csv">
+    </div>
+    <div class="bar-sep"></div>
+    <!-- URL monitor: 3 editable slots, status shown inline; logged to separate URL_LSKEY -->
+    <div class="url-panel" id="urlPanel">
+      <div class="url-row">
+        <input class="ifield url-input" id="urlInput0" type="text" spellcheck="false" title="URL to monitor (omit https://)">
+        <span class="url-status" id="urlStatus0">—</span>
+      </div>
+      <div class="url-row">
+        <input class="ifield url-input" id="urlInput1" type="text" spellcheck="false" title="URL to monitor">
+        <span class="url-status" id="urlStatus1">—</span>
+      </div>
+      <div class="url-row">
+        <input class="ifield url-input" id="urlInput2" type="text" spellcheck="false" title="URL to monitor">
+        <span class="url-status" id="urlStatus2">—</span>
+      </div>
+      <div style="text-align:right;margin-top:1px">
+        <button class="btn btn-dim" onclick="exportUrlLog()" title="Export URL check log to CSV" style="font-size:9px;padding:2px 6px">&#11015; URL log</button>
+      </div>
     </div>
   </div>
 </div>
@@ -426,9 +453,10 @@ input[type=file]{display:none}
 // ═══════════════════════════════════════════════════
 
 // ── identity & storage ────────────────────────────
-const VERSION       = '1.8';
+const VERSION       = '1.9';
 const THEME         = 'indigo';       // theme file: themes/theme-<THEME>.css
-const LSKEY         = 'speedmon_logs_v2';
+const LSKEY         = 'speedmon_logs_v2';    // main speed/ping log — do not mix URL results here
+const URL_LSKEY     = 'speedmon_url_logs_v1'; // URL monitor log — separate storage
 const PREFS         = 'speedmon_prefs_v2';
 const CHART_H_KEY   = 'speedmon_chart_h';
 
@@ -474,6 +502,14 @@ const COL_PING_LINE = '#906010';  // ping line
 const COL_FAIL      = '#e09090';  // failed test / dropout points (matches --fail)
 
 const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+// ── URL monitor ───────────────────────────────────
+const DEFAULT_URL_TARGETS = ['ninetrees.com','cambrianworks.com','apple.com'];
+const URL_CHECK_INTERVAL_MINS = 5;
+const URL_TIMEOUT_MS          = 10_000;
+
+let urlTargets=[...DEFAULT_URL_TARGETS]; // 3 monitored URLs (strings)
+let urlCheckTimer=null;
 
 let logs=[], paused=false, testing=false;
 let chartSpeed=null;
@@ -587,8 +623,14 @@ function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 // ── network meta ──────────────────────────────────
 let cachedMeta=null, lastKnownIp=null;
 async function refreshNetMeta(){
+  // 8-second timeout so a slow/absent Cloudflare response never blocks init()
+  const fetchWithTimeout=(url,opts={},ms=8000)=>{
+    const ctrl=new AbortController();
+    const tid=setTimeout(()=>ctrl.abort(),ms);
+    return fetch(url,{...opts,signal:ctrl.signal}).finally(()=>clearTimeout(tid));
+  };
   try{
-    const meta=await fetch(`${CF}/meta`,{cache:'no-store'}).then(r=>r.json());
+    const meta=await fetchWithTimeout(`${CF}/meta`,{cache:'no-store'}).then(r=>r.json());
     const ip=meta.clientIp||'';
     if(lastKnownIp&&ip&&ip!==lastKnownIp){
       addStateEvent('NETWORK-CHANGED');
@@ -599,7 +641,7 @@ async function refreshNetMeta(){
   }catch{
     // Fallback: Cloudflare CDN trace returns plain text ip= line, open CORS
     try{
-      const txt=await fetch('https://www.cloudflare.com/cdn-cgi/trace',{cache:'no-store'}).then(r=>r.text());
+      const txt=await fetchWithTimeout('https://www.cloudflare.com/cdn-cgi/trace',{cache:'no-store'}).then(r=>r.text());
       const ip=(txt.match(/(?:^|\n)ip=([^\n]+)/)||[])[1]?.trim()||'';
       if(ip){
         if(lastKnownIp&&ip!==lastKnownIp){ addStateEvent('NETWORK-CHANGED'); if(!testing&&!paused) runPingCheck(); }
@@ -1077,8 +1119,8 @@ function initCharts(){
          },
          afterFit(scale){ scale.height=42; }, // fixed height — reserves space for 2-line labels on all windows
          grid:{
-           lineWidth: ctx=>new Date(ctx.tick.value).getHours()===0?2:1,
-           color: ctx=>new Date(ctx.tick.value).getHours()===0?'rgba(120,100,220,.9)':'rgba(58,46,144,.6)'
+           lineWidth: ctx=>ctx.tick&&new Date(ctx.tick.value).getHours()===0?2:1,
+           color:     ctx=>ctx.tick&&new Date(ctx.tick.value).getHours()===0?'rgba(120,100,220,.9)':'rgba(58,46,144,.6)'
          }},
       yS:{position:'left',grid:{color:gc},ticks:{color:tc,font:{size:10}},
           min:0,max:CHART_Y_MAX,title:{display:true,text:'Mb/s',color:tc,font:{size:10}}},
@@ -1126,7 +1168,7 @@ function updateCharts(){
     pingPts.push({x:d.getTime(),y:Math.min(CHART_Y_MAX,v)});
     pingColors.push(ok?COL_PING:COL_FAIL);
   }
-  // speed: ok entries use measured Mb/s; failed tests plot at zero (dropout trough)
+  // speed: ok entries use measured Mb/s; failed tests plot at zero with red point
   const downPts=[], downColors=[], upPts=[], upColors=[];
   for(const e of rec){
     const d=parseTS(e.timestamp); if(!d) continue;
@@ -1136,11 +1178,14 @@ function updateCharts(){
     upPts.push({x:d.getTime(), y:ok?Math.min(CHART_Y_MAX,parseFloat(e.upload_mbps)||0):0});
     upColors.push(ok?COL_UP:COL_FAIL);
   }
-  // set x axis range to span of data (or last 500-pt window)
+  // set x axis: if selected window has data use it; otherwise fall back to full data range
   const allX=[...downPts.map(p=>p.x)];
   if(allX.length>=1){
     const t0=parseTS(rec[0].timestamp), t1=parseTS(rec[rec.length-1].timestamp);
-    const xMin=chartWindowMs!==CHART_WINDOW_ALL?Date.now()-chartWindowMs:allX[0];
+    const windowMin=Date.now()-chartWindowMs;
+    const hasInWindow=allX.some(x=>x>=windowMin);
+    // when no data in selected window, extend left to show oldest data so chart isn't blank
+    const xMin=chartWindowMs===CHART_WINDOW_ALL?allX[0]:hasInWindow?windowMin:allX[0];
     const xMax=Date.now(); // right edge = now, so newest point never clips
     const spanH=(xMax-xMin)/3600000;
     // ticks: 6h step always — gives 4 ticks/day; each tick shows HH:00 or M/D at midnight
@@ -1355,7 +1400,9 @@ function wireIntervalField(id){
   el.addEventListener('blur',()=>{
     const v=parseFloat(el.value);
     if(isNaN(v)||v<=0) el.value=id==='fldPingInterval'?DEFAULT_PING_MINS:DEFAULT_TEST_MINS;
+    setPref(id==='fldPingInterval'?'ping_mins':'test_mins', parseFloat(el.value));
     if(!testing&&!paused){ clearAllTimers(); startSchedules(); }
+    if(id==='fldTestInterval') startUrlChecks(); // URL check interval tracks full test interval
   });
 }
 wireIntervalField('fldPingInterval');
@@ -1415,17 +1462,107 @@ function applyChartHeight(h){
   },{passive:false});
 })();
 
+// ── URL monitor ───────────────────────────────────
+// Stored in URL_LSKEY — completely separate from main speed log (LSKEY)
+// Each entry: {ts, url, state:'up'|'timeout'|'down', ms, conn_ok}
+
+function urlNormalize(raw){
+  const s=raw.trim(); if(!s) return '';
+  return /^https?:\/\//i.test(s)?s:'https://'+s;
+}
+
+function loadUrlLogs(){ try{return JSON.parse(localStorage.getItem(URL_LSKEY)||'[]');}catch{return[];} }
+function saveUrlLog(entry){
+  try{
+    const rows=loadUrlLogs();
+    rows.push(entry);
+    // keep last 2000 URL check results
+    localStorage.setItem(URL_LSKEY, JSON.stringify(rows.length>2000?rows.slice(-2000):rows));
+  }catch(e){ console.warn('URL log save failed',e); }
+}
+
+function setUrlStatus(idx, state, ms){
+  try{
+    const el=document.getElementById('urlStatus'+idx); if(!el) return;
+    if(state==='up'){
+      el.textContent=`UP  ${ms}ms`; el.className='url-status url-up';
+    } else if(state==='timeout'){
+      el.textContent='TIMEOUT';     el.className='url-status url-down';
+    } else {
+      // if our own connection is also down, we can't blame the remote
+      const note=lastPingOk?' (remote?)':' (local?)';
+      el.textContent='DOWN'+note;   el.className='url-status url-down';
+    }
+  }catch(e){ console.warn('setUrlStatus',e); }
+}
+
+async function checkUrl(idx){
+  try{
+    const raw=(urlTargets[idx]||'').trim();
+    if(!raw){ const el=document.getElementById('urlStatus'+idx); if(el) el.textContent='—'; return; }
+    const url=urlNormalize(raw);
+    const ctrl=new AbortController();
+    const tid=setTimeout(()=>ctrl.abort(), URL_TIMEOUT_MS);
+    const t0=Date.now();
+    let state, ms=0;
+    try{
+      await fetch(url,{method:'HEAD',mode:'no-cors',signal:ctrl.signal});
+      clearTimeout(tid); ms=Date.now()-t0; state='up';
+    }catch(e){
+      clearTimeout(tid); state=e.name==='AbortError'?'timeout':'down';
+    }
+    setUrlStatus(idx, state, ms);
+    saveUrlLog({ts:new Date().toLocaleString(),url:raw,state,ms,conn_ok:lastPingOk});
+  }catch(e){ console.warn('checkUrl',idx,e); }
+}
+
+function checkAllUrls(){ [0,1,2].forEach(i=>checkUrl(i)); }
+
+function startUrlChecks(){
+  clearInterval(urlCheckTimer);
+  checkAllUrls();
+  urlCheckTimer=setInterval(checkAllUrls, getTestInterval()*60_000);
+}
+
+function initUrlPanel(){
+  try{
+    const prefs=loadPrefs();
+    urlTargets=prefs.url_targets||[...DEFAULT_URL_TARGETS];
+    for(let i=0;i<3;i++){
+      const inp=document.getElementById('urlInput'+i); if(!inp) continue;
+      inp.value=urlTargets[i]||'';
+      inp.onchange=()=>{ urlTargets[i]=inp.value.trim(); setPref('url_targets',[...urlTargets]); checkUrl(i); };
+    }
+  }catch(e){ console.warn('initUrlPanel',e); }
+}
+
+function exportUrlLog(){
+  const rows=loadUrlLogs(); if(!rows.length){ alert('No URL log entries yet.'); return; }
+  const hdr='timestamp,url,state,ms,conn_ok';
+  const body=rows.map(r=>[r.ts||'',r.url||'',r.state||'',r.ms||'',r.conn_ok==null?'':r.conn_ok].join(',')).join('\n');
+  const blob=new Blob([hdr+'\n'+body],{type:'text/csv'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  const mac=getMachine().replace(/\s+/g,'_');
+  const now=new Date(); const q=Math.ceil((now.getMonth()+1)/3);
+  a.download=`urlcheck_${mac}_${now.getFullYear()}-Q${q}.csv`;
+  a.click();
+}
+
 // ── init ──────────────────────────────────────────
 function init(){
   const prefs=loadPrefs();
   if(prefs.machine_label) document.getElementById('fldName').value=prefs.machine_label;
+  if(prefs.ping_mins)     document.getElementById('fldPingInterval').value=prefs.ping_mins;
+  if(prefs.test_mins)     document.getElementById('fldTestInterval').value=prefs.test_mins;
   logs=loadLogs();
   rebuildLog(); renderNetDisplay();
   initCharts(); updateStats(); updateCharts();
+  try{ initUrlPanel(); }catch(e){ console.warn('URL panel init failed',e); }
   refreshNetMeta().then(()=>{
     addStateEvent('STARTED');
     startSchedules();
     runPingCheck();   // immediate ping on load; full test only fires at scheduled interval
+    try{ startUrlChecks(); }catch(e){ console.warn('URL checks failed',e); }
   });
   setInterval(refreshNetMeta, 120000);
   // Slide chart x-axis right edge to now even when no new data arrives
