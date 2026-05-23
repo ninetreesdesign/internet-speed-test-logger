@@ -15,3 +15,4 @@ Sources: `CL-chat` = claude.ai chat | `CL-cowork` = claude.ai Projects | `CL-cod
 | 5 | CL-code | 2026-Apr-19 7:01 AM PDT | (session — details not recovered) |
 | 6 | CL-code | 2026-Apr-19 7:10 AM PDT | v1.8: new CSV schema (stats-first, merged fields), constants block, ping overlay chart points, DN line color muted, help modal fixes, README rewrite absorbing kickoff doc, git init |
 | 7 | CL-code | 2026-Apr-19 4:54 PM PDT | Help modal finalized, HTML compat comments, import schema helpers (parseRowV1x/V16/Current), fullTestDueEpoch rename |
+| 8 | CL-code | 2026-May-23 3:01 PM PDT | v1.9: URL monitor panel (3 editable slots, separate log storage), chart auto-refresh, dropout plotting, day-boundary grid lines, day abbreviations on axis, refreshNetMeta timeout, interval prefs saved, Chart.js ctx.tick crash fixed |
