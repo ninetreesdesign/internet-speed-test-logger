@@ -239,6 +239,7 @@ then reverts to normal ping schedule. Logs OFFLINE on first fail, RECOVERED on s
 | 1 | **Toolbar — single non-wrapping row** | Currently 2-row; restructure with CSS grid |
 | 2 | **Chart 500pt point selector** | Count-based (100/200/500/All) with null pre-fill so data anchors right edge |
 | 3 | **Import schema helpers** | Split `importCSV()` format detection into `parseRowV1x()`, `parseRowV16()`, `parseRowCurrent()` |
+| 4 | **Background collector (no browser)** | Python/shell script: ping + Cloudflare speed test once/hr, writes directly to CSV; runs as background process or login item. Eliminates need to keep browser tab open. |
 
 ---
 
