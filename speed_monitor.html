@@ -46,18 +46,16 @@ body{
 
 /* ── toolbar ── */
 .bar{
-  display:flex;flex-direction:column;gap:5px;
-  padding:6px 12px;background:var(--bg3);
+  display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;
+  gap:6px;padding:5px 12px;background:var(--bg3);
   border-bottom:2px solid var(--div);flex-shrink:0
 }
-.bar-row1{display:flex;align-items:center;gap:6px}
-.bar-row2{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 /* 2x2 grid: top=interval labels+inputs, bottom=action gold btns */
 .bar-igroup{
   display:grid;grid-template-columns:auto auto;
-  column-gap:6px;row-gap:4px;align-items:center
+  column-gap:6px;row-gap:4px;align-items:center;flex-shrink:0
 }
-.bar-sep{width:1px;height:28px;background:var(--div);flex-shrink:0;margin:0 2px}
+.bar-sep{width:1px;height:36px;background:var(--div);flex-shrink:0;margin:0 2px}
 /* 3-col grid: [Pause][Export][?] / [Stop][Import][ ] */
 .bar-action-grid{display:grid;grid-template-columns:auto auto auto;gap:4px;flex-shrink:0}
 
@@ -90,11 +88,11 @@ body{
 .lbl{color:var(--dim);font-size:10px;white-space:nowrap}
 .netdisp{
   background:var(--bg2);color:var(--lbl);border:1px solid var(--bdr);
-  border-radius:3px;padding:3px 7px;font-size:11px;min-width:120px;max-width:260px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1
+  border-radius:3px;padding:3px 7px;font-size:11px;min-width:120px;max-width:220px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:1
 }
 /* ── URL monitor panel ── */
-.url-panel{display:flex;flex-direction:column;gap:3px;flex-shrink:0}
+.url-panel{display:flex;flex-direction:column;gap:3px;flex-shrink:0;align-self:center}
 .url-row{display:flex;align-items:center;gap:5px}
 .url-input{width:148px;font-size:10px;padding:2px 5px}
 .url-status{font-size:10px;min-width:100px;white-space:nowrap;color:var(--dim)}
@@ -268,15 +266,13 @@ input[type=file]{display:none}
 
 <!-- ── toolbar ── -->
 <div class="bar">
-  <!-- row 1: identity -->
-  <div class="bar-row1">
-    <input class="ifield" id="fldName" type="text" placeholder="Machine name" style="width:130px">
-    <div   class="netdisp" id="fldNet">Detecting…</div>
-    <div   class="netdisp" id="fldPlatform" style="min-width:70px;max-width:150px;color:var(--dim);font-size:10px">…</div>
-  </div>
-  <!-- row 2: 2x2 interval grid | file btns | pause/stop/help -->
-  <div class="bar-row2">
-    <div class="bar-igroup">
+  <!-- identity block -->
+  <input class="ifield" id="fldName" type="text" placeholder="Machine name" style="width:120px;flex-shrink:0">
+  <div   class="netdisp" id="fldNet">Detecting…</div>
+  <div   class="netdisp" id="fldPlatform" style="min-width:60px;max-width:130px;color:var(--dim);font-size:10px;flex-shrink:1">…</div>
+  <div class="bar-sep"></div>
+  <!-- controls: interval grid | action grid | url panel -->
+  <div class="bar-igroup">
       <div class="aux-row">
         <span class="lbl">Ping</span>
         <input class="ifield" id="fldPingInterval" type="text" inputmode="decimal" value="15"
@@ -291,19 +287,19 @@ input[type=file]{display:none}
       </div>
       <button class="btn btn-gold btn-sm" id="btnPing" style="justify-self:stretch">Ping Test</button>
       <button class="btn btn-gold btn-sm" id="btnNow"  style="justify-self:stretch">Full Test</button>
-    </div>
-    <div class="bar-sep"></div>
-    <div class="bar-action-grid">
+  </div>
+  <div class="bar-sep"></div>
+  <div class="bar-action-grid">
       <button class="btn btn-sm btn-pause" id="btnPR">Pause &#9724;</button>
       <button class="btn btn-dim" id="btnExport" title="Export log to CSV file">&#11015; Export</button>
       <button class="btn btn-dim" id="btnHelp" style="font-weight:bold;padding:3px 8px;color:var(--lbl)" title="Help">?</button>
       <button class="btn btn-sm btn-stop"  id="btnStop">Stop</button>
       <label  class="btn btn-dim" for="fileIn" style="cursor:pointer" title="Import CSV log">&#11014; Import</label>
       <input  type="file" id="fileIn" accept=".csv">
-    </div>
-    <div class="bar-sep"></div>
-    <!-- URL monitor: 3 editable slots, status shown inline; logged to separate URL_LSKEY -->
-    <div class="url-panel" id="urlPanel">
+  </div>
+  <div class="bar-sep"></div>
+  <!-- URL monitor: 3 editable slots, status shown inline; logged to separate URL_LSKEY -->
+  <div class="url-panel" id="urlPanel">
       <div class="url-row">
         <input class="ifield url-input" id="urlInput0" type="text" spellcheck="false" title="URL to monitor (omit https://)">
         <span class="url-status" id="urlStatus0">—</span>
@@ -319,7 +315,6 @@ input[type=file]{display:none}
       <div style="text-align:right;margin-top:1px">
         <button class="btn btn-dim" onclick="exportUrlLog()" title="Export URL check log to CSV" style="font-size:9px;padding:2px 6px">&#11015; URL log</button>
       </div>
-    </div>
   </div>
 </div>
 
