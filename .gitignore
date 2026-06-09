@@ -13,3 +13,6 @@ speedtest_prefs.txt
 
 # LiveCode companion app prefs (not part of HTML app)
 speedtest_prefs.txt
+
+# Background collector log (written by launchd agent)
+speedmon_bg.log
