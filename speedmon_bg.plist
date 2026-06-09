@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ninetreesdesign.speedmon-bg</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_bg.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log</string>
+
+  <!-- Restart automatically if the script exits or crashes -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Start at login -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Log stdout/stderr -->
+  <key>StandardOutPath</key>
+  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_bg.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_bg.log</string>
+</dict>
+</plist>
