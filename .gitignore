@@ -16,3 +16,6 @@ speedtest_prefs.txt
 
 # Background collector log (written by launchd agent)
 speedmon_bg.log
+
+# Claude Code session data
+.claude/
