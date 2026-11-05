@@ -13,6 +13,9 @@ Two parts, no server and no open tab:
   tests. Export and Import cover those manual tests only. `archive/speed_viewer.html` is an
   alternate layout with downtime bars and an outage table.
 
+Tested in Chrome and Firefox on Mac. Safari, Windows and Linux are not yet tested. Previews inside
+other apps cannot run the page; use a real browser window.
+
 ### Install on a computer
 
 Run once from `collector/bin/`, using the file for that system:
@@ -99,7 +102,7 @@ Compare within one tool; `tool.comparable_group` marks which results belong toge
 CSV exports saved there. Imported history has no sleep information, so it counts toward
 availability but does not list outages.
 
-Everything below describes the earlier browser and Python versions.
+Everything below is history: it describes the earlier browser and Python versions, which are retired.
 
 ## Earlier workflow (v2.3b, 2026-09-26)
 

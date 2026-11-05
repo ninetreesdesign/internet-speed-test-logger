@@ -288,12 +288,12 @@ func gatewayAnswers() string {
 	} else {
 		cmd = exec.Command("ping", "-c", "2", gw)
 	}
-	ctx_done := time.AfterFunc(6*time.Second, func() {
+	kill_timer := time.AfterFunc(6*time.Second, func() {
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
 	})
-	defer ctx_done.Stop()
+	defer kill_timer.Stop()
 	if err := cmd.Run(); err != nil {
 		return "fail"
 	}

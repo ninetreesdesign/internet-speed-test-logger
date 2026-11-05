@@ -9,11 +9,11 @@
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/python3</string>
-    <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_bg.py</string>
+    <string>/Users/davidsmithfinzi/Dropbox/Internet_Speed_Test_Log/speedmon_bg.py</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log</string>
+  <string>/Users/davidsmithfinzi/Dropbox/Internet_Speed_Test_Log</string>
 
   <!-- launchd has a minimal PATH; include ~/go/bin for M-Lab ndt7-client. -->
   <key>EnvironmentVariables</key>
@@ -33,8 +33,8 @@
   <integer>300</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_launchd.log</string>
+  <string>/Users/davidsmithfinzi/Dropbox/Internet_Speed_Test_Log/speedmon_launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_launchd.log</string>
+  <string>/Users/davidsmithfinzi/Dropbox/Internet_Speed_Test_Log/speedmon_launchd.log</string>
 </dict>
 </plist>

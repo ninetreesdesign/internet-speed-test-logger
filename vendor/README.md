@@ -1,6 +1,7 @@
 # Vendored browser dependencies
 
-Files are unmodified upstream assets.
+Files are unmodified upstream assets, except `ndt7-workers-embedded.js`, which
+`build_embedded_workers.py` generates from the two worker files so the page runs from `file://`.
 
 - M-Lab client/workers: `@m-lab/ndt7@0.1.5`, https://registry.npmjs.org/@m-lab/ndt7/-/ndt7-0.1.5.tgz
 - Chart.js: `4.4.0`, https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js

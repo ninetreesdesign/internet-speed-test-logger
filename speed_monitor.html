@@ -2,6 +2,8 @@
 <!--
 Internet Speed Monitor
 Version history
+  v3.0   2026-11-04  Viewer for background collector logs from all computers; no server needed;
+                      manual tests only from this page; annotations; computer, network and tool filters.
   v2.3b  2026-09-26  Verified upstream assets; guarded measurement/import math; CSV compatibility;
                       cancellation, absolute scheduling, responsive layout, background safety.
   v2.3    2026-09-25  NDT7/data-integrity release: local workers; final NDT7 measurements;
@@ -442,7 +444,7 @@ button:focus-visible,input:focus-visible,label:focus-visible{outline:2px solid v
     <h2>Speed Monitor -- Quick Reference</h2>
 
     <h3>Opening the app</h3>
-    <p>Double-click <code>speed_monitor.html</code> in the Dropbox folder <code>Internet Speed Test Log</code>. No server is needed. Keep it with <code>vendor/</code> and always open it in the same browser, because the log is stored per browser.</p>
+    <p>Double-click <code>speed_monitor.html</code> in the Dropbox folder <code>Internet_Speed_Test_Log</code>. No server is needed. Keep it with <code>vendor/</code> and <code>viewer_data/</code>. Any browser shows the background logs; manual tests are saved only in the browser that ran them. Open it in a real browser window, since previews inside other apps cannot run it.</p>
 
     <h3>How it works</h3>
     <p>The background collector tests on each computer, with or without this page open, and logs to Dropbox. This page shows those logs from every computer and reloads them every 5 minutes. Ping Test and Full Test run immediately in this browser and are kept in this browser only.</p>
@@ -454,10 +456,12 @@ button:focus-visible,input:focus-visible,label:focus-visible{outline:2px solid v
       <tr><td>Show Ping</td><td>Show or hide the latency overlay</td></tr>
       <tr><td>URL slots</td><td>Three independent connectivity witnesses</td></tr>
       <tr><td>URL log</td><td>Export witness diagnostics</td></tr>
-      <tr><td>Pause / Resume</td><td>Suspend or resume all scheduling</td></tr>
-      <tr><td>Stop</td><td>Halt without closing the page</td></tr>
-      <tr><td>Export</td><td>Download CSV log file</td></tr>
-      <tr><td>Import</td><td>Load existing CSV to merge history</td></tr>
+      <tr><td>Pause / Resume</td><td>Pause or resume this page only; background logging continues</td></tr>
+      <tr><td>Stop</td><td>Cancel this page's test and checks; background logging continues</td></tr>
+      <tr><td>Time buttons</td><td>Graph range, from 1 hour to all history</td></tr>
+      <tr><td>Computer / Network / Tool</td><td>Filter background logs. Tools read differently, so compare within one tool</td></tr>
+      <tr><td>Export</td><td>Download this browser's manual tests as CSV</td></tr>
+      <tr><td>Import</td><td>Add a CSV to this browser's log</td></tr>
       <tr><td>Drop zone</td><td>Drag a CSV onto the log area to import</td></tr>
     </table>
 
@@ -466,9 +470,9 @@ button:focus-visible,input:focus-visible,label:focus-visible{outline:2px solid v
       <tr><td style="color:var(--ok)">● green</td><td>Full speed test -- ok</td></tr>
       <tr><td style="color:var(--fail)">x red</td><td>Measurement/tool failure -- connectivity not necessarily lost</td></tr>
       <tr><td style="color:var(--ping-ok)">. blue</td><td>Ping check -- ok (ping only, no speeds)</td></tr>
-      <tr><td style="color:var(--dim)"># gray</td><td>State event (STARTED, PAUSED, DROPOUT...)</td></tr>
+      <tr><td style="color:var(--dim)"># gray</td><td>Event or annotation, such as PAUSED, an outage type, or [A1]</td></tr>
     </table>
-    <p>Click any row for full detail popup.</p>
+    <p>Click any row for full detail popup. On the graph, dashed lines and shaded bands with labels such as A1 mark changes listed in <code>annotations.csv</code>; add a line there when equipment, service or method changes.</p>
 
     <h3>Scheduling</h3>
     <p>Set in <code>collector_settings.json</code>: a connectivity check every minute and a speed test about every 4 hours. Ping points from the collector are 15-minute medians for the last 8 days and hourly medians before that.</p>
@@ -477,7 +481,7 @@ button:focus-visible,input:focus-visible,label:focus-visible{outline:2px solid v
     <p>Collector logs are in <code>data/</code> in the Dropbox folder. Export saves only this browser's manual tests; Import adds a CSV to this browser.</p>
 
     <h3>Speed test source</h3>
-    <p>M-Lab NDT7 -- download and upload using M-Lab's official browser client. Each full test is one sustained NDT7 run (not a 3-pass average). Both browser test types report the median of ten Cloudflare HTTP latency probes before bandwidth testing; zero, invalid, timed-out, and over-2000-ms samples are excluded. The three URL targets are independent connectivity witnesses; their response times are retained only in the diagnostic URL log and are not website-speed measurements.</p>
+    <p>Background tests use M-Lab NDT7, or Cloudflare if M-Lab fails; click a row to see its tool. Manual tests use M-Lab NDT7 -- download and upload using M-Lab's official browser client. Each full test is one sustained NDT7 run (not a 3-pass average). Both browser test types report the median of ten Cloudflare HTTP latency probes before bandwidth testing; zero, invalid, timed-out, and over-2000-ms samples are excluded. The three URL targets are independent connectivity witnesses; their response times are retained only in the diagnostic URL log and are not website-speed measurements.</p>
   </div>
 </div>
 
@@ -518,7 +522,6 @@ const NDT7_UP_WORKER    = './ndt7-upload-worker.js';
 
 // ── storage limits ────────────────────────────────
 const LOG_MAX_ENTRIES = 6000;
-const LOG_TRIM_TO     = 1000;       // fallback trim on quota error
 const LS_QUOTA_BYTES  = 5_242_880;  // 5 MB typical localStorage quota
 const LS_WARN_PCT     = 80;
 
@@ -572,7 +575,7 @@ function setFullCooldown(until){
 }
 let runGeneration=0, cancelNdt7=null;
 const pendingRequests=new Set();
-let pageScheduling=false;    // the background collector does the scheduled testing
+let pageScheduling=false;    // the background collector tests; true restores the older page-run schedule
 let fullTestDueEpoch=null;   // absolute time when next full test should fire
 
 // ── prefs ─────────────────────────────────────────
@@ -839,7 +842,7 @@ function startSchedules(){
 
 
 // ── independent connectivity confirmation ─────────
-// Cloudflare speed-test failure alone does not prove an Internet dropout.
+// A failed speed test alone does not prove an Internet dropout.
 // Check the three configured URL-monitor hosts using lightweight no-cors GET requests.
 // A successful response-header arrival is sufficient evidence of reachability; abort
 // immediately so page bodies are not intentionally consumed. A dropout is confirmed
@@ -1488,7 +1491,7 @@ function updateCharts(){
     // when no data in selected window, extend left to show oldest data so chart isn't blank
     const xMin=chartWindowMs===CHART_WINDOW_ALL?allX[0]:hasInWindow?windowMin:allX[0];
     const xMax=Date.now(); // right edge = now, so newest point never clips
-    // ticks: 6h step always — gives 4 ticks/day; each tick shows HH:00 or M/D at midnight
+    // tick spacing follows the range; see chartTickStepFor
     chartEffectiveWindowMs=chartWindowMs!==CHART_WINDOW_ALL?chartWindowMs:xMax-xMin;
     chartTickStep=chartTickStepFor(chartEffectiveWindowMs);
     chartSpeed.options.scales.x.min=xMin;

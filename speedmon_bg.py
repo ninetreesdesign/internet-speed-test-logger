@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+RETIRED 2026-11-04: replaced by collector/. Kept for reference; not run.
+
 speedmon_bg.py — background companion for Internet Speed Monitor v2.2c+
 Version 2.3b-bg1  2026-09-26
 
