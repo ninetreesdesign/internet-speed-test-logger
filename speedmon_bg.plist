@@ -15,18 +15,26 @@
   <key>WorkingDirectory</key>
   <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log</string>
 
-  <!-- Restart automatically if the script exits or crashes -->
+  <!-- launchd has a minimal PATH; include ~/go/bin for M-Lab ndt7-client. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/davidsmithfinzi/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- speedmon_bg.py contains its own hourly loop; restart only after failure/exit. -->
   <key>KeepAlive</key>
   <true/>
 
-  <!-- Start at login -->
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- Log stdout/stderr -->
+  <key>ThrottleInterval</key>
+  <integer>300</integer>
+
   <key>StandardOutPath</key>
-  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_bg.log</string>
+  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_bg.log</string>
+  <string>/Users/davidsmithfinzi/Dropbox/Internet Speed Test Log/speedmon_launchd.log</string>
 </dict>
 </plist>

@@ -1,0 +1,181 @@
+<!doctype html>
+<!-- Speed Monitor viewer v1.0.0  2026-11-04
+     Read-only graphs of the logs written by collector/. Double-click to open; no server.
+     Data format: see README.md. Colors and sizes are the CSS tokens just below. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Speed Monitor</title>
+<script src="../vendor/chart.umd.min.js"></script>
+<style>
+:root{color-scheme:light;--bg:#f7f7f5;--surface:#fcfcfb;--text:#0b0b0b;--text2:#52514e;--grid:#e6e5e0;--border:#dddcd6;
+ --down:#2a78d6;--up:#eb6834;--latency:#1baf7a;--bad:#d03b3b;--btn:#ecebe6}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#111110;--surface:#1a1a19;--text:#f0efec;--text2:#c3c2b7;--grid:#30302d;--border:#3a3a37;
+ --down:#3987e5;--up:#d95926;--latency:#199e70;--bad:#d03b3b;--btn:#2a2a28}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1200px;margin:auto;padding:16px}
+header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:baseline}h1{font-size:20px;margin:0}
+#fresh{color:var(--text2);font-size:13px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+.seg{display:flex;flex-wrap:wrap;gap:2px}
+button,select{font:inherit;color:var(--text);background:var(--btn);border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer}
+button[aria-pressed=true]{background:var(--text);color:var(--surface)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:12px}
+.tile,.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.tile b{display:block;font-size:24px;font-weight:600}.tile small,.note{color:var(--text2);font-size:12px}
+.card{margin-bottom:12px}.card h2{font-size:14px;margin:0 0 6px}
+.plot{position:relative;height:260px}.plot.short{height:150px}
+.key{display:flex;gap:14px;font-size:12px;color:var(--text2);margin-bottom:4px}.key i{display:inline-block;width:12px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
+.scroll{overflow-x:auto;max-height:340px;overflow-y:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:4px 10px 4px 0;border-bottom:1px solid var(--grid);white-space:nowrap}th{color:var(--text2);font-weight:500;position:sticky;top:0;background:var(--surface)}
+#empty{display:none;padding:24px}
+</style></head><body><main>
+<header><h1>Speed Monitor</h1><span id="fresh"></span></header>
+<div class="filters">
+ <div class="seg" id="ranges" role="group" aria-label="Time range"></div>
+ <label>Computer <select id="machine"></select></label>
+ <label>Network <select id="network"></select></label>
+</div>
+<div class="card" id="empty">No logs found yet. Install the collector on this computer (see README.md), then reload.</div>
+<div id="content">
+ <div class="tiles" id="tiles"></div>
+ <div class="card"><h2>Speed</h2><div class="key"><span><i style="background:var(--down)"></i>Download</span><span><i style="background:var(--up)"></i>Upload</span></div><div class="plot"><canvas id="speedChart"></canvas></div></div>
+ <div class="card"><h2>Response time</h2><div class="plot short"><canvas id="latencyChart"></canvas></div></div>
+ <div class="card"><h2>Downtime</h2><div class="plot short"><canvas id="downChart"></canvas></div><div class="note">Share of checks with no internet while the computer was awake. Sleep and being off a network do not count, except in history from before Nov 4, 2026, which cannot tell them apart.</div></div>
+ <div class="card"><h2>Outages and interruptions</h2><label class="note"><input type="checkbox" id="showGaps"> Include times the computer was asleep or off</label><div class="scroll"><table id="eventTable"></table></div></div>
+ <div class="card"><details><summary>Speed test table</summary><div class="scroll"><table id="speedTable"></table></div></details></div>
+</div>
+</main>
+<script>
+// --- Settings
+const RANGES=[['1 day',1],['7 days',7],['30 days',30],['90 days',90],['1 year',365],['All',0]];
+const RELOAD_MS=5*60*1000;
+const MAX_POINTS=240;
+const KIND={internet:'Internet outage',local:'Router not answering',no_network:'Not on a network',captive:'Sign-in page blocking',unmonitored:'Asleep or off'};
+const OUTAGE_KINDS=['internet','local'];
+let view_days=7,charts={};
+
+// --- Data loading: script tags work from file://, where fetch does not
+function loadScript(src){return new Promise(res=>{const s=document.createElement('script');
+ s.src=src+'?t='+Date.now();s.onload=()=>{s.remove();res(true)};s.onerror=()=>{s.remove();res(false)};document.head.append(s);});}
+async function loadAll(){
+ window.SPEEDMON_MACHINES=null;await loadScript('../viewer_data/machines.js');
+ window.SPEEDMON_DATA={};
+ await Promise.all((window.SPEEDMON_MACHINES||[]).map(m=>loadScript('../viewer_data/'+encodeURIComponent(m)+'.js')));
+ refreshFilters();render();
+}
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+// Most recently measured first; a rebuild alone does not make a retired computer current.
+const lastData=m=>Math.max(+(m.speed.at(-1)?.[0]||0),+(m.recent.at(-1)?.[0]||0));
+const machines=()=>Object.values(window.SPEEDMON_DATA||{}).sort((a,b)=>lastData(b)-lastData(a));
+
+// --- Filters
+function refreshFilters(){
+ const ms=machines(),mSel=document.getElementById('machine'),nSel=document.getElementById('network');
+ const keep=mSel.value;
+ mSel.innerHTML='<option value="">All computers</option>'+ms.map(m=>`<option>${esc(m.machine)}</option>`).join('');
+ if(ms.some(m=>m.machine===keep))mSel.value=keep;else if(ms.length&&!keep)mSel.value=ms[0].machine;
+ const nets=new Set();
+ selected().forEach(m=>{m.speed.forEach(r=>nets.add(r[7]));m.hours.forEach(h=>nets.add(h[1]))});nets.delete('');
+ const keepN=nSel.value;
+ nSel.innerHTML='<option value="">All networks</option>'+[...nets].sort().map(n=>`<option>${esc(n)}</option>`).join('');
+ if(nets.has(keepN))nSel.value=keepN;
+}
+const selected=()=>{const v=document.getElementById('machine').value;return machines().filter(m=>!v||m.machine===v)};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function median(a){if(!a.length)return null;const s=[...a].sort((x,y)=>x-y);return s[Math.floor(s.length/2)]}
+
+// --- Collect rows inside the chosen range and network
+function collect(){
+ const net=document.getElementById('network').value;
+ const now=Date.now()/1000;
+ let from=view_days?now-view_days*86400:Infinity;
+ const speed=[],hours=[],recent=[],events=[];
+ for(const m of selected()){
+  for(const r of m.speed){const t=+r[0];if((!view_days||t>=from)&&(!net||r[7]===net))speed.push({t,status:r[1],provider:r[2],down:r[3]===''?null:+r[3],up:r[4]===''?null:+r[4],ping:r[5]===''?null:+r[5],server:r[6],network:r[7],iface:r[8],note:r[9],machine:m.machine});}
+  for(const h of m.hours)if((!view_days||h[0]>=from-3600)&&(!net||h[1]===net))hours.push({t:h[0],ok:h[2],bad:h[3],rtt:h[5]});
+  for(const c of m.recent)if((!view_days||c[0]>=from)&&(!net||c[3]===net))recent.push({t:c[0],state:c[1],rtt:c[2]===''?null:+c[2]});
+  for(const e of m.events)if((!view_days||e[1]>=from)&&(!net||e[3]===net||e[2]==='unmonitored'))events.push({start:e[0],end:e[1],kind:e[2],network:e[3],ongoing:e[4],machine:m.machine});
+ }
+ speed.sort((a,b)=>a.t-b.t);hours.sort((a,b)=>a.t-b.t);
+ if(!view_days){const all=[...speed,...hours].map(x=>x.t);from=all.length?Math.min(...all):now-86400;}
+ return {from,now,speed,hours,recent,events};
+}
+
+// Medians per time bucket, so long ranges stay readable without hiding the trend.
+function bucketSeries(rows,field,from,now,bucket){
+ const map=new Map();
+ for(const r of rows){const v=r[field];if(v==null)continue;const k=Math.floor(r.t/bucket)*bucket;(map.get(k)||map.set(k,[]).get(k)).push(v);}
+ return [...map.keys()].sort((a,b)=>a-b).map(k=>({x:Math.min(k+bucket/2,now)*1000,y:median(map.get(k)),n:map.get(k).length}));
+}
+const niceBucket=span=>{const want=span/MAX_POINTS;for(const b of [900,3600,4*3600,6*3600,12*3600,86400,7*86400,30*86400])if(b>=want)return b;return 30*86400};
+
+// --- Charts: one axis per chart
+function fmtAxis(ms,span){const d=new Date(ms);return span<=2*86400?d.toLocaleTimeString([],{hour:'numeric'}):span<=120*86400?d.toLocaleDateString([],{month:'short',day:'numeric'}):d.toLocaleDateString([],{month:'short',year:'2-digit'})}
+function fmtFull(ms){return new Date(ms).toLocaleString([],{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})}
+function baseOptions(from,now,unit,bucket){const span=now-from;return {responsive:true,maintainAspectRatio:false,animation:false,normalized:true,
+ interaction:{mode:'nearest',axis:'x',intersect:false},
+ plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>fmtFull(i[0].parsed.x),
+   label:i=>`${i.dataset.label}: ${i.parsed.y.toFixed(unit==='%'?2:1)} ${unit}`+(i.raw.n>1?` (median of ${i.raw.n})`:'')}}},
+ scales:{x:{type:'linear',offset:false,min:from*1000,max:now*1000,grid:{display:false},border:{color:css('--border')},ticks:{color:css('--text2'),maxTicksLimit:8,maxRotation:0,callback:v=>fmtAxis(v,span)}},
+  y:{beginAtZero:true,afterFit:a=>{a.width=64},grid:{color:css('--grid')},border:{display:false},ticks:{color:css('--text2'),maxTicksLimit:5,callback:v=>v+(unit==='%'?'%':'')},title:{display:true,text:unit,color:css('--text2')}}}};}
+function line(label,data,color,bucket){return {label,data,borderColor:color,backgroundColor:color,borderWidth:2,pointRadius:data.length<60?3:0,pointHoverRadius:5,tension:0,spanGaps:Math.max(bucket*3,12*3600)*1000}}
+function draw(id,config){if(charts[id])charts[id].destroy();charts[id]=new Chart(document.getElementById(id),config)}
+
+// --- Render
+function render(){
+ const has=machines().length>0;
+ document.getElementById('empty').style.display=has?'none':'block';
+ document.getElementById('content').style.display=has?'block':'none';
+ document.getElementById('ranges').querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.d===view_days));
+ if(!has)return;
+ const d=collect(),span=d.now-d.from,bucket=niceBucket(span);
+ const good=d.speed.filter(r=>r.status==='ok');
+ // A short range shows each test; longer ranges show medians.
+ const speedBucket=span<=7*86400?0:bucket;
+ const series=f=>speedBucket?bucketSeries(good,f,d.from,d.now,speedBucket):good.filter(r=>r[f]!=null).map(r=>({x:r.t*1000,y:r[f],n:1}));
+ draw('speedChart',{type:'line',data:{datasets:[line('Download',series('down'),css('--down'),speedBucket||3600),line('Upload',series('up'),css('--up'),speedBucket||3600)]},options:baseOptions(d.from,d.now,'Mb/s')});
+ const useRecent=view_days&&view_days<=7;
+ const lat=useRecent?bucketSeries(d.recent.filter(c=>c.rtt!=null).map(c=>({t:c.t,rtt:c.rtt})),'rtt',d.from,d.now,bucket):bucketSeries(d.hours,'rtt',d.from,d.now,bucket);
+ draw('latencyChart',{type:'line',data:{datasets:[line('Response time',lat,css('--latency'),bucket)]},options:baseOptions(d.from,d.now,'ms')});
+ const dmap=new Map();for(const h of d.hours){const k=Math.floor(h.t/bucket)*bucket;const c=dmap.get(k)||{ok:0,bad:0};c.ok+=h.ok;c.bad+=h.bad;dmap.set(k,c);}
+ const dpts=[...dmap.keys()].sort((a,b)=>a-b).map(k=>{const c=dmap.get(k);return {x:Math.min(k+bucket/2,d.now)*1000,y:c.ok+c.bad?100*c.bad/(c.ok+c.bad):0,n:1}});
+ draw('downChart',{type:'bar',data:{datasets:[{label:'Downtime',data:dpts,backgroundColor:css('--bad'),borderRadius:2,barThickness:'flex',maxBarThickness:10,minBarLength:0}]},options:baseOptions(d.from,d.now,'%')});
+ renderTiles(d,good);renderEvents(d);renderSpeedTable(d);renderFresh();
+}
+function fmtDur(s){if(s<90)return Math.round(s)+' s';if(s<5400)return Math.round(s/60)+' min';if(s<172800)return (s/3600).toFixed(1)+' h';return (s/86400).toFixed(1)+' days'}
+function renderTiles(d,good){
+ const ok=d.hours.reduce((a,h)=>a+h.ok,0),bad=d.hours.reduce((a,h)=>a+h.bad,0);
+ const out=d.events.filter(e=>OUTAGE_KINDS.includes(e.kind));
+ const fail=d.speed.filter(r=>r.status!=='ok').length;
+ const tile=(v,l,s)=>`<div class="tile"><small>${l}</small><b>${v}</b><small>${s}</small></div>`;
+ const m=f=>median(good.map(r=>r[f]).filter(v=>v!=null));const n=(v,dec=0)=>v==null?'--':v.toFixed(dec);
+ const rtts=d.recent.map(c=>c.rtt).filter(v=>v!=null);const hr=d.hours.map(h=>h.rtt).filter(v=>v!=null);
+ document.getElementById('tiles').innerHTML=
+  tile(n(m('down')),'Download, median Mb/s',`${good.length} tests`)+
+  tile(n(m('up')),'Upload, median Mb/s',fail?`${fail} failed tests`:'no failed tests')+
+  tile(n(median(rtts.length?rtts:hr)),'Response time, median ms','connectivity checks')+
+  tile(ok+bad?(100*ok/(ok+bad)).toFixed(2)+'%':'--','Availability',`${(ok+bad).toLocaleString()} checks`)+
+  tile(out.length,'Outages',out.length?fmtDur(out.reduce((a,e)=>a+e.end-e.start,0))+' total':'none logged');
+}
+function renderEvents(d){
+ const show=document.getElementById('showGaps').checked;
+ const rows=d.events.filter(e=>show||e.kind!=='unmonitored').sort((a,b)=>b.start-a.start).slice(0,500);
+ document.getElementById('eventTable').innerHTML='<tr><th>Started</th><th>Lasted</th><th>What</th><th>Network</th><th>Computer</th></tr>'+
+  (rows.map(e=>`<tr><td>${fmtFull(e.start*1000)}</td><td>${fmtDur(e.end-e.start)}${e.ongoing?' so far':''}</td><td>${KIND[e.kind]||esc(e.kind)}</td><td>${esc(e.network)}</td><td>${esc(e.machine)}</td></tr>`).join('')||'<tr><td colspan="5">None in this range.</td></tr>');
+}
+function renderSpeedTable(d){
+ const rows=[...d.speed].reverse().slice(0,500);
+ document.getElementById('speedTable').innerHTML='<tr><th>Time</th><th>Down</th><th>Up</th><th>Ping</th><th>Service</th><th>Network</th><th>Link</th><th>Computer</th><th>Note</th></tr>'+
+  rows.map(r=>`<tr><td>${fmtFull(r.t*1000)}</td><td>${r.down??'--'}</td><td>${r.up??'--'}</td><td>${r.ping??'--'}</td><td>${esc(r.provider)}</td><td>${esc(r.network)}</td><td>${esc(r.iface)}</td><td>${esc(r.machine)}</td><td>${esc(r.note)}</td></tr>`).join('');
+}
+function renderFresh(){document.getElementById('fresh').textContent=selected().map(m=>`${m.machine}: last data ${fmtFull(lastData(m)*1000)}`).join(' · ')}
+
+// --- Setup
+document.getElementById('ranges').innerHTML=RANGES.map(([l,v])=>`<button data-d="${v}">${l}</button>`).join('');
+document.getElementById('ranges').addEventListener('click',e=>{if(e.target.dataset.d!=null){view_days=+e.target.dataset.d;render()}});
+document.getElementById('machine').addEventListener('change',()=>{refreshFilters();render()});
+document.getElementById('network').addEventListener('change',render);
+document.getElementById('showGaps').addEventListener('change',render);
+matchMedia('(prefers-color-scheme:dark)').addEventListener('change',render);
+loadAll();setInterval(loadAll,RELOAD_MS);
+</script></body></html>

@@ -1,0 +1,5 @@
+id,start,end,scope,kind,text,source,confidence
+A1,2026-09-03,2026-09-19,network:Comcast home,equipment,"Old Motorola modem/router failing; replaced by Xfinity modem/router and the Netgear disconnected at the same time. David recalls early September and about a week and was traveling, so tests ran unattended and what ran on each computer is not known. Dates shown are from the speed pattern.",David + logs,approximate
+A2,2026-10-05,,tools,method,"LiveCode app starts Cloudflare and M-Lab tests alongside the old Python tool. Same days read about 175 (Python) / 335 (Cloudflare) / 500 (M-Lab), so these differences are from the tools. Readings before this date, from the old tools, likely understate the line.",logs,measured
+A3,2026-10-13,,network:Comcast home,unknown,"M-Lab readings step from about 500 to about 1000. Cause not recorded. The Netgear was already gone (A1); switching to or from the Red Dwarf router or moving the laptop are possibilities.",David + logs,cause unknown
+A4,2026-11-04,,tools,method,"Background collector starts: M-Lab about every 4 hours, connectivity check each minute, network label logged.",David + logs,exact

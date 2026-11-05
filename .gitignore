@@ -19,3 +19,14 @@ speedmon_bg.log
 
 # Claude Code session data
 .claude/
+
+# Python caches and rotated local diagnostics
+__pycache__/
+*.pyc
+speedmon_bg.log.*
+speedmon_launchd.log
+
+# Collector logs and generated files
+data/
+viewer_data/
+collector/bin/

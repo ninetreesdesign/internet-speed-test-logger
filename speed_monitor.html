@@ -1,10 +1,44 @@
 <!DOCTYPE html>
+<!--
+Internet Speed Monitor
+Version history
+  v2.3b  2026-09-26  Verified upstream assets; guarded measurement/import math; CSV compatibility;
+                      cancellation, absolute scheduling, responsive layout, background safety.
+  v2.3    2026-09-25  NDT7/data-integrity release: local workers; final NDT7 measurements;
+                      explicit CSV epoch/type/server fields; robust import/dedupe/sort;
+                      scheduler/reentrancy fixes; separate ping scale; dropout UI;
+                      URL CSV quoting; pause/stop URL scheduling; documentation sync.
+  v2.2c  2026-09-25  Headline stats use a fixed rolling 24 h window independent of chart range;
+                      availability uses only confirmed reachable/dropout observations and
+                      excludes measurement/tool failures.
+  v2.2a  2026-09-25  Use lightweight GET instead of HEAD for the three independent
+                      connectivity witnesses; abort after response headers; retain
+                      per-site diagnostic logging and two-round dropout confirmation.
+  v2.2b  2026-09-25  Make NDT7 result handling tolerant of nonfatal callback errors; robust measurement extraction; log selected server.
+  v2.2   2026-09-25  Replace home-grown throughput test with one M-Lab NDT7 run;
+                      retain separate 3-target diagnostic URL history; hide misleading
+                      URL response times; expand speed chart to 1200 Mb/s.
+  v2.1   2026-09-25  Scheduler correctness; unknown interface fallback; normalized
+                      dropout logging; dead-code/comment/help cleanup; version/UI
+                      synchronization; formatting cleanup. Measurement algorithm unchanged.
+  v2.0d  2026-09-25  Add source-header version history.
+  v2.0c  2026-09-25  Distinguish confirmed connectivity dropouts from test/tool
+                      failures; confirm apparent outage against independent hosts
+                      with a 10 s recheck; graph only valid points and confirmed
+                      dropouts.
+  v2.0b  2026-09-25  Reverse ping Y-axis so lower latency plots higher.
+  v2.0a  2026-09-25  Failed speed tests create graph gaps instead of false zero
+                      readings; increase speed chart range for faster service.
+  v1.9   Prior baseline.
+-->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Speed Monitor</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="./vendor/chart.umd.min.js"></script>
+<script src="./vendor/ndt7.js?v=20261005-urlguard"></script>
+<script src="./vendor/ndt7-workers-embedded.js"></script>
 <style>
 :root {
   --bg:    #1e1560; --bg2: #1a1450; --bg3: #150f40;
@@ -35,18 +69,18 @@ body{
   #log{font-size:10px}
   .chart-strip{flex-wrap:wrap;gap:5px}
   /* hide secondary stats when space is tight */
-  #avPings, #avTests{display:none}
+  .stat-count{display:none}
   #rangeLabel{display:none}
 }
 /* ── phone layout (≤420px) ── */
 @media(max-width:420px){
   .bar-sep{display:none}
-  #avUptime{display:none}
+  .stat-availability{display:none}
 }
 
 /* ── toolbar ── */
 .bar{
-  display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;
+  display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;
   gap:6px;padding:5px 12px;background:var(--bg3);
   border-bottom:2px solid var(--div);flex-shrink:0
 }
@@ -92,10 +126,10 @@ body{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:1
 }
 /* ── URL monitor panel ── */
-.url-panel{display:flex;flex-direction:column;gap:3px;flex-shrink:0;align-self:center}
+.url-panel{display:flex;flex-direction:row;flex-wrap:wrap;gap:8px;flex:1 0 100%;align-items:center}
 .url-row{display:flex;align-items:center;gap:5px}
 .url-input{width:148px;font-size:10px;padding:2px 5px}
-.url-status{font-size:10px;min-width:100px;white-space:nowrap;color:var(--dim)}
+.url-status{font-size:10px;min-width:32px;white-space:nowrap;color:var(--dim)}
 .url-up{color:var(--ok)}
 .url-down{color:var(--fail)}
 
@@ -171,6 +205,7 @@ body{
   display:flex;flex-direction:column;overflow:hidden
 }
 .chart-strip{
+  flex-wrap:wrap;
   flex-shrink:0;display:flex;align-items:center;gap:14px;
   padding:3px 12px;border-bottom:1px solid var(--div);
   font-size:10px;overflow:hidden;white-space:nowrap
@@ -260,6 +295,15 @@ input[type=file]{display:none}
   color:var(--dim);font-size:16px;cursor:pointer;line-height:1;padding:2px 6px
 }
 .modal .close-btn:hover{color:var(--txt)}
+@media(max-width:580px){
+  .bar{flex-wrap:wrap;padding:5px 6px;gap:5px}
+  .r-ts,.col-ts{width:88px;flex-shrink:0}
+  .r-down,.col-down,.r-up,.col-up{width:44px;flex-shrink:0}
+  .r-ping,.col-ping{width:54px;flex-shrink:0}
+  .r-net,.col-net{min-width:0}
+  .detail-popup{max-width:calc(100vw - 8px);overflow-wrap:anywhere}
+}
+button:focus-visible,input:focus-visible,label:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 </style>
 </head>
 <body>
@@ -273,13 +317,13 @@ input[type=file]{display:none}
   <div class="bar-sep"></div>
   <!-- controls: interval grid | action grid | url panel -->
   <div class="bar-igroup">
-      <div class="aux-row">
+      <div class="aux-row" style="display:none">
         <span class="lbl">Ping</span>
         <input class="ifield" id="fldPingInterval" type="text" inputmode="decimal" value="15"
                style="width:38px;text-align:right" onfocus="this.select()" title="Ping check interval (minutes)">
         <span class="lbl">min</span>
       </div>
-      <div class="aux-row">
+      <div class="aux-row" style="display:none">
         <span class="lbl">Full Test</span>
         <input class="ifield" id="fldTestInterval" type="text" inputmode="decimal" value="30"
                style="width:38px;text-align:right" onfocus="this.select()" title="Full speed test interval (minutes)">
@@ -290,14 +334,13 @@ input[type=file]{display:none}
   </div>
   <div class="bar-sep"></div>
   <div class="bar-action-grid">
-      <button class="btn btn-sm btn-pause" id="btnPR">Pause &#9724;</button>
-      <button class="btn btn-dim" id="btnExport" title="Export log to CSV file">&#11015; Export</button>
+      <button class="btn btn-sm btn-pause" id="btnPR" title="Pauses this page only; background logging continues">Pause &#9724;</button>
+      <button class="btn btn-dim" id="btnExport" title="Export this browser's manual tests to CSV">&#11015; Export</button>
       <button class="btn btn-dim" id="btnHelp" style="font-weight:bold;padding:3px 8px;color:var(--lbl)" title="Help">?</button>
-      <button class="btn btn-sm btn-stop"  id="btnStop">Stop</button>
+      <button class="btn btn-sm btn-stop"  id="btnStop" title="Cancels this page's test; background logging continues">Stop</button>
       <label  class="btn btn-dim" for="fileIn" style="cursor:pointer" title="Import CSV log">&#11014; Import</label>
       <input  type="file" id="fileIn" accept=".csv">
   </div>
-  <div class="bar-sep"></div>
   <!-- URL monitor: 3 editable slots, status shown inline; logged to separate URL_LSKEY -->
   <div class="url-panel" id="urlPanel">
       <div class="url-row">
@@ -355,14 +398,19 @@ input[type=file]{display:none}
         <button class="win-btn active" data-ms="86400000">1d</button>
         <button class="win-btn" data-ms="604800000">7d</button>
         <button class="win-btn" data-ms="2592000000">30d</button>
+        <button class="win-btn" data-ms="7776000000">90d</button>
+        <button class="win-btn" data-ms="31536000000">1y</button>
         <button class="win-btn" data-ms="0">All</button>
       </div>
-      <span><span class="cs-lbl">Avg down</span><span class="cs-down" id="avDown">—</span><span class="cs-lbl"> Mb/s</span></span>
+      <select class="ifield" id="fltMachine" title="Computer shown; this browser's manual tests always show"></select>
+      <select class="ifield" id="fltNetwork" title="Network shown" style="max-width:150px"></select>
+      <select class="ifield" id="fltTool" title="Test tool shown; tools read differently, so compare within one" style="max-width:130px"></select>
+      <span><span class="cs-lbl">24h avg down</span><span class="cs-down" id="avDown">—</span><span class="cs-lbl"> Mb/s</span></span>
       <span><span class="cs-lbl">up</span><span class="cs-up" id="avUp">—</span><span class="cs-lbl"> Mb/s</span></span>
       <span><span class="cs-lbl">ping</span><span class="cs-ping" id="avPing">—</span></span>
-      <span><span class="cs-lbl">uptime</span><span class="cs-neu" id="avUptime">—</span></span>
-      <span><span class="cs-lbl">tests</span><span class="cs-neu" id="avTests">0</span></span>
-      <span><span class="cs-lbl">pings</span><span class="cs-neu" id="avPings">0</span></span>
+      <span class="stat-availability" title="Reachable observations divided by known connectivity observations; not elapsed-time uptime"><span class="cs-lbl">availability</span><span class="cs-neu" id="avUptime">—</span></span>
+      <span class="stat-count"><span class="cs-lbl">tests</span><span class="cs-neu" id="avTests">0</span></span>
+      <span class="stat-count"><span class="cs-lbl">pings</span><span class="cs-neu" id="avPings">0</span></span>
       <span style="color:var(--dim);font-size:9px" id="rangeLabel"></span>
     </div>
     <!-- speed chart full width -->
@@ -382,7 +430,7 @@ input[type=file]{display:none}
 <!-- ── status bar ── -->
 <div class="sbar">
   <div class="sdot" id="dot"></div>
-  <span class="stxt" id="stxt" title="Ping + speed test via Cloudflare speed.cloudflare.com">Initializing…</span>
+  <span class="stxt" id="stxt" title="Latency checks + M-Lab NDT7 bandwidth + independent connectivity witnesses">Initializing…</span>
   <span id="lsWarn" style="display:none;color:var(--fail);font-size:10px;font-weight:bold;flex-shrink:0"></span>
   <div class="pbwrap"><div class="pb" id="pb"></div></div>
 </div>
@@ -393,25 +441,19 @@ input[type=file]{display:none}
     <button class="close-btn" id="helpClose">x</button>
     <h2>Speed Monitor -- Quick Reference</h2>
 
-    <h3>URL -- open this in your browser</h3>
-    <p style="margin-bottom:4px"><code>http://localhost:8765/speed_monitor.html</code></p>
-    <p style="font-size:10px;color:var(--dim)">Requires the local server to be running first (see below). <code>file://</code> URLs will not work -- the speed test API requires a server origin.</p>
+    <h3>Opening the app</h3>
+    <p>Double-click <code>speed_monitor.html</code> in the Dropbox folder <code>Internet Speed Test Log</code>. No server is needed. Keep it with <code>vendor/</code> and always open it in the same browser, because the log is stored per browser.</p>
 
-    <h3>Starting the server</h3>
-    <p><b>Mac / Linux:</b> in Terminal:<br>
-    <code>cd ~/Dropbox/Internet\ Speed\ Test\ Log &amp;&amp; python3 -m http.server 8765</code><br>
-    <b>Windows:</b> in Command Prompt:<br>
-    <code>cd "%USERPROFILE%\Dropbox\Internet Speed Test Log" &amp;&amp; python -m http.server 8765</code><br>
-    Then open <code>http://localhost:8765/speed_monitor.html</code></p>
-
-    <h3>First use on a new machine</h3>
-    <p>1. Enter a machine name (top-left field) -- labels all log rows from this device<br>
-    2. Set Ping and Full test intervals (click field, type new value, press Enter)<br>
-    3. Dashboard auto-starts -- ping fires immediately, full test follows on first ping success</p>
+    <h3>How it works</h3>
+    <p>The background collector tests on each computer, with or without this page open, and logs to Dropbox. This page shows those logs from every computer and reloads them every 5 minutes. Ping Test and Full Test run immediately in this browser and are kept in this browser only.</p>
 
     <h3>Controls</h3>
     <table>
-      <tr><td>Full Test</td><td>Run a manual full speed test now</td></tr>
+      <tr><td>Full Test</td><td>Run a manual full NDT7 speed test now</td></tr>
+      <tr><td>Ping Test</td><td>Run a lightweight latency/connectivity check</td></tr>
+      <tr><td>Show Ping</td><td>Show or hide the latency overlay</td></tr>
+      <tr><td>URL slots</td><td>Three independent connectivity witnesses</td></tr>
+      <tr><td>URL log</td><td>Export witness diagnostics</td></tr>
       <tr><td>Pause / Resume</td><td>Suspend or resume all scheduling</td></tr>
       <tr><td>Stop</td><td>Halt without closing the page</td></tr>
       <tr><td>Export</td><td>Download CSV log file</td></tr>
@@ -422,34 +464,34 @@ input[type=file]{display:none}
     <h3>Log row symbols</h3>
     <table>
       <tr><td style="color:var(--ok)">● green</td><td>Full speed test -- ok</td></tr>
-      <tr><td style="color:var(--fail)">x red</td><td>Speed test or ping -- failed</td></tr>
+      <tr><td style="color:var(--fail)">x red</td><td>Measurement/tool failure -- connectivity not necessarily lost</td></tr>
       <tr><td style="color:var(--ping-ok)">. blue</td><td>Ping check -- ok (ping only, no speeds)</td></tr>
-      <tr><td style="color:var(--dim)"># gray</td><td>State event (STARTED, PAUSED, OFFLINE...)</td></tr>
+      <tr><td style="color:var(--dim)"># gray</td><td>State event (STARTED, PAUSED, DROPOUT...)</td></tr>
     </table>
     <p>Click any row for full detail popup.</p>
 
     <h3>Scheduling</h3>
-    <p>Ping check runs every N min (default 15). Full speed test runs every M min (default 30) but only fires after a successful ping. On ping failure: retries every 1 min up to 5x, logs OFFLINE / RECOVERED events, then reverts to normal schedule.</p>
+    <p>Set in <code>collector_settings.json</code>: a connectivity check every minute and a speed test about every 4 hours. Ping points from the collector are 15-minute medians for the last 8 days and hourly medians before that.</p>
 
     <h3>Data</h3>
-    <p>Saved in browser localStorage -- persists across restarts. Export CSV regularly to keep a permanent copy. Log files named <code>speedtest_&lt;machine&gt;_&lt;year&gt;-Q&lt;n&gt;.csv</code> -- one per machine per quarter.</p>
+    <p>Collector logs are in <code>data/</code> in the Dropbox folder. Export saves only this browser's manual tests; Import adds a CSV to this browser.</p>
 
     <h3>Speed test source</h3>
-    <p>Cloudflare <code>speed.cloudflare.com</code> -- ping, download, upload. Each full test runs 3 passes and averages the results.</p>
+    <p>M-Lab NDT7 -- download and upload using M-Lab's official browser client. Each full test is one sustained NDT7 run (not a 3-pass average). Both browser test types report the median of ten Cloudflare HTTP latency probes before bandwidth testing; zero, invalid, timed-out, and over-2000-ms samples are excluded. The three URL targets are independent connectivity witnesses; their response times are retained only in the diagnostic URL log and are not website-speed measurements.</p>
   </div>
 </div>
 
 <script>
 // ═══════════════════════════════════════════════════
-//  SPEED MONITOR  v1.8
+//  SPEED MONITOR  v3.0  2026-11-04
+//  Shows background collector logs; Ping and Full Test buttons run manual tests here.
 //  Layout: log panel top (resizable) / chart panel bottom
 //  Chart: single full-width speed chart, optional ping overlay
-//  CSV:   timestamp,download_mbps,upload_mbps,ping_ms,machine,browser,iface,result
+//  CSV:   timestamp,epoch,type,download_mbps,upload_mbps,ping_ms,machine,browser,iface,result,server
 // ═══════════════════════════════════════════════════
 
 // ── identity & storage ────────────────────────────
-const VERSION       = '1.9';
-const THEME         = 'indigo';       // theme file: themes/theme-<THEME>.css
+const VERSION       = '3.0';
 const LSKEY         = 'speedmon_logs_v2';    // main speed/ping log — do not mix URL results here
 const URL_LSKEY     = 'speedmon_url_logs_v1'; // URL monitor log — separate storage
 const PREFS         = 'speedmon_prefs_v2';
@@ -464,14 +506,15 @@ const DEFAULT_TEST_MINS   = 30;
 const RETRY_INTERVAL_MINS = 1;
 const TIMEOUT_SECS        = 30;
 const MAX_RETRIES         = 5;
+const DROPOUT_RECHECK_MS   = 10000;     // confirm apparent outage after 10 s
 
 // ── measurement ───────────────────────────────────
-const FULL_TEST_PASSES  = 3;
-const PING_PROBE_COUNT  = 5;   // probes per full-test ping (median)
-const PING_QUICK_COUNT  = 3;   // probes for standalone ping check
-// Numeric separators (1_000_000) require ES2021: Chrome 75+, Firefox 70+, Safari 13+, Edge 75+
-const DOWNLOAD_SIZES    = [500_000, 2_000_000, 5_000_000, 10_000_000, 25_000_000]; // bytes
-const UPLOAD_SIZES      = [500_000, 2_000_000, 5_000_000];
+// Full bandwidth tests use the official M-Lab NDT7 browser client.
+// One NDT7 run is one full test; do not repeat/average multiple passes.
+const PING_QUICK_COUNT  = 10;   // lightweight Cloudflare HTTP-latency probes
+// Exact upstream client and workers are pinned locally to @m-lab/ndt7 0.1.5.
+const NDT7_DOWN_WORKER  = './ndt7-download-worker.js';
+const NDT7_UP_WORKER    = './ndt7-upload-worker.js';
 
 // ── storage limits ────────────────────────────────
 const LOG_MAX_ENTRIES = 6000;
@@ -483,7 +526,11 @@ const LS_WARN_PCT     = 80;
 const CHART_H_MIN     = 120;
 const CHART_H_MAX     = 600;
 const CHART_H_DEF     = 210;
-const CHART_Y_MAX     = 350;        // shared ceiling: Mb/s and ms
+const CHART_Y_MAX     = 1200;        // speed ceiling, Mb/s
+const VALID_DOWN_MAX  = 2000;        // reject impossible/corrupt stored measurements
+const VALID_UP_MAX    = 500;
+const VALID_PING_MAX  = 2000;
+const PING_Y_MAX      = 300;         // latency ceiling, ms
 const CHART_WINDOW_ALL = 0;         // sentinel: show all data, no time cutoff
 const HOUR_MS         = 3_600_000;
 
@@ -500,13 +547,12 @@ const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 // ── URL monitor ───────────────────────────────────
 const DEFAULT_URL_TARGETS = ['ninetrees.com','cambrianworks.com','apple.com'];
-const URL_CHECK_INTERVAL_MINS = 5;
 const URL_TIMEOUT_MS          = 10_000;
 
 let urlTargets=[...DEFAULT_URL_TARGETS]; // 3 monitored URLs (strings)
 let urlCheckTimer=null;
 
-let logs=[], paused=false, testing=false;
+let logs=[], paused=false, stopped=false, testing=false, pinging=false;
 let chartSpeed=null;
 let chartWindowMs = 24 * HOUR_MS;       // selected window (0 = All)
 let chartEffectiveWindowMs = 24*HOUR_MS; // actual span used for tick logic (resolved from data for All)
@@ -514,21 +560,30 @@ let activePopup=null;
 let chartTickStep = 6 * HOUR_MS;
 
 // ── dual scheduler state ──────────────────────────
-let pingTimer=null, testTimer=null, cdTimer=null;
+let pingTimer=null, cdTimer=null;
 let nextPingAt=null, nextTestAt=null;
 let retryMode=false, retryCount=0;
-let lastPingOk=true;
+let lastPingOk=null;
+let fullCooldownUntil=0;
+try{fullCooldownUntil=Number(localStorage.getItem('speedmon_full_cooldown_until'))||0;}catch{}
+function setFullCooldown(until){
+  fullCooldownUntil=until;
+  try{localStorage.setItem('speedmon_full_cooldown_until',String(until));}catch{}
+}
+let runGeneration=0, cancelNdt7=null;
+const pendingRequests=new Set();
+let pageScheduling=false;    // the background collector does the scheduled testing
 let fullTestDueEpoch=null;   // absolute time when next full test should fire
 
 // ── prefs ─────────────────────────────────────────
 const loadPrefs = ()=>{ try{return JSON.parse(localStorage.getItem(PREFS)||'{}')}catch{return{}} };
-const savePrefs = p => localStorage.setItem(PREFS,JSON.stringify(p));
+const savePrefs = p => { try{localStorage.setItem(PREFS,JSON.stringify(p));}catch{storageWarning();} };
 const setPref   = (k,v)=>{ const p=loadPrefs(); p[k]=v; savePrefs(p); };
 
 // ── log storage ───────────────────────────────────
 function saveLogs(){
   try{
-    const data=JSON.stringify(logs.slice(-LOG_MAX_ENTRIES));
+    const data=JSON.stringify(logs.filter(e=>!e._src).slice(-LOG_MAX_ENTRIES));
     localStorage.setItem(LSKEY,data);
     let used=0;
     for(const k in localStorage) if(localStorage.hasOwnProperty(k)) used+=((localStorage[k]||'').length+(k.length))*2;
@@ -539,20 +594,55 @@ function saveLogs(){
       else{warn.style.display='none';}
     }
   }
-  catch{logs=logs.slice(-LOG_TRIM_TO);localStorage.setItem(LSKEY,JSON.stringify(logs));}
+  catch{storageWarning();}
 }
-function loadLogs(){try{return JSON.parse(localStorage.getItem(LSKEY)||'[]');}catch{return[];}}
+function storageWarning(){
+  const el=document.getElementById('lsWarn');
+  if(el){el.textContent='Storage unavailable/full — export CSV to save this session';el.style.display='';}
+}
+function validFullMeasurement(e){
+  const down=Number(e?.download_mbps), up=Number(e?.upload_mbps);
+  const ping=(e?.ping_ms===''||e?.ping_ms==null)?null:Number(e.ping_ms);
+  return Number.isFinite(down)&&down>0&&down<=VALID_DOWN_MAX&&
+         Number.isFinite(up)&&up>0&&up<=VALID_UP_MAX&&
+         (ping===null||(Number.isFinite(ping)&&ping>=0&&ping<=VALID_PING_MAX));
+}
+function normalizeRecord(e){
+  if(!e||typeof e!=='object') return null;
+  e={...e};
+  e._t=({full:'data',event:'evt'}[e._t||e.type]||e._t||'data');
+  if(!['data','ping','evt'].includes(e._t)) return null;
+  e.status=String(e.status||'fail').toLowerCase();
+  if((e.note||'').includes('[conn_ok=true]')) e.conn_ok=true;
+  if(e._t==='evt'){e.status='ok';e._txt=e._txt||e.note||'';return e;}
+  if(!['ok','dropout','fail'].includes(e.status)) e.status='fail';
+  const ping=e.ping_ms;
+  const pingValid=ping!==''&&ping!=null&&Number.isFinite(Number(ping))&&Number(ping)>=0&&Number(ping)<=VALID_PING_MAX;
+  if(e.status==='ok'&&!(e._t==='data'?validFullMeasurement(e):pingValid)){
+    e._invalid={download_mbps:e.download_mbps,upload_mbps:e.upload_mbps,ping_ms:e.ping_ms};
+    e.note='fail: rejected invalid measurement '+JSON.stringify(e._invalid);
+    e.status='fail';e.download_mbps='';e.upload_mbps='';e.ping_ms='';
+  }
+  return e;
+}
+function loadLogs(){
+  try{
+    const a=JSON.parse(localStorage.getItem(LSKEY)||'[]');
+    return Array.isArray(a)?a.map(normalizeRecord).filter(Boolean).sort((a,b)=>recordEpoch(a)-recordEpoch(b)):[];
+  }catch{return[];}
+}
 
 // ── timestamp parsing ─────────────────────────────
 function parseTS(str){
   if(!str) return null;
-  const d=new Date(str);
-  if(!isNaN(d)) return d;
+  str=String(str);
   const m=str.match(/(\d+)\/(\d+)\/(\d+)\s+(\d+):(\d+)\s*(AM|PM)/i);
-  if(!m) return null;
+  if(!m){const d=new Date(str);return isNaN(d)?null:d;}
   let [,mo,dy,yr,hr,mn,ap]=m;
   yr=parseInt(yr); if(yr<100) yr+=2000;
   hr=parseInt(hr); mn=parseInt(mn);
+  mo=Number(mo);dy=Number(dy);
+  if(mo<1||mo>12||dy<1||dy>new Date(yr,mo,0).getDate()||hr<1||hr>12||mn<0||mn>59) return null;
   if(ap.toUpperCase()==='PM'&&hr!==12) hr+=12;
   if(ap.toUpperCase()==='AM'&&hr===12) hr=0;
   return new Date(yr,parseInt(mo)-1,parseInt(dy),hr,mn,0,0);
@@ -588,24 +678,26 @@ function splitTS(tsStr){
 function getMachine(){ return document.getElementById('fldName').value.trim()||getPlatform().str; }
 function getPingInterval(){
   const v=parseFloat(document.getElementById('fldPingInterval').value);
-  return (!isNaN(v)&&v>0)?v:DEFAULT_PING_MINS;
+  return (Number.isFinite(v)&&v>0&&v<=10080)?v:DEFAULT_PING_MINS;
 }
 function getTestInterval(){
   const v=parseFloat(document.getElementById('fldTestInterval').value);
-  return (!isNaN(v)&&v>0)?v:DEFAULT_TEST_MINS;
+  return (Number.isFinite(v)&&v>0&&v<=10080)?v:DEFAULT_TEST_MINS;
 }
 function getConnType(){
   // Network Information API: Chrome/Edge only — not supported in Firefox or Safari
   const c=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
-  if(!c) return 'cable';   // no API (Firefox/Safari) — assume cable
+  if(!c) return 'unknown';   // no reliable interface API in Firefox/Safari
   const t=c.type||'',et=c.effectiveType||'';
   if(t==='wifi'||et==='wifi') return 'wifi';
   if(t==='ethernet')          return 'eth';
   if(t==='cellular')          return 'cell';
-  return 'cable';
+  return 'unknown';
 }
 function getOsCode(){
   const ua=navigator.userAgent, pl=navigator.platform||'';
+  if(/iPhone|iPad/.test(ua)||(/Mac/.test(pl)&&navigator.maxTouchPoints>1)) return 'ios';
+  if(/Android/.test(ua)) return 'android';
   if(/Win/.test(pl)||/Windows/.test(ua))        return 'win';
   if(/Mac/.test(pl)||/Macintosh/.test(ua))       return 'mac';
   if(/Linux/.test(pl))                           return 'linux';
@@ -613,7 +705,7 @@ function getOsCode(){
   if(/Android/.test(ua))                         return 'android';
   return 'unknown';
 }
-function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 // ── network meta ──────────────────────────────────
 let cachedMeta=null, lastKnownIp=null;
@@ -659,10 +751,10 @@ function getPlatform(){
   const os=getOsCode();
   const ua=navigator.userAgent;
   let browser='unknown';
-  if(/Edg\//.test(ua))         browser='edge';
+  if(/Edg\/|EdgiOS\/|EdgA\//.test(ua))         browser='edge';
   else if(/OPR\//.test(ua))    browser='opera';
-  else if(/Chrome\//.test(ua)) browser='chrome';
-  else if(/Firefox\//.test(ua))browser='firefox';
+  else if(/Chrome\/|CriOS\//.test(ua)) browser='chrome';
+  else if(/Firefox\/|FxiOS\//.test(ua))browser='firefox';
   else if(/Safari\//.test(ua)) browser='safari';
   const inElectron=typeof process!=='undefined'&&process.versions?.electron;
   if(inElectron) browser='cowork';
@@ -683,68 +775,147 @@ function setTesting(on){
   document.getElementById('btnNow').disabled=on;
 }
 function updateIdleStatus(){
-  if(paused){ setStatus('Paused','paused'); return; }
+  if(paused){ setStatus(stopped?'Stopped':'Paused','paused'); return; }
+  if(Date.now()<fullCooldownUntil){
+    setStatus('Internet checks continue; M-Lab cooldown until '+fmtTime(new Date(fullCooldownUntil)));
+    return;
+  }
   if(retryMode){
-    setStatus(`Offline — retry ${retryCount}/${MAX_RETRIES} — next ping in ${RETRY_INTERVAL_MINS} min`,'offline');
+    setStatus(`Dropout — retry ${retryCount}/${MAX_RETRIES} — next ping in ${RETRY_INTERVAL_MINS} min`,'offline');
     return;
   }
   const parts=[];
   if(nextPingAt) parts.push(`ping ${fmtTime(new Date(nextPingAt))}`);
   if(nextTestAt) parts.push(`test ${fmtTime(new Date(nextTestAt))}`);
-  setStatus(parts.length?'Next: '+parts.join('  |  '):'Idle');
+  setStatus(parts.length?'Next: '+parts.join('  |  '):collectorStatus());
 }
 
 // ── scheduling ────────────────────────────────────
 function clearAllTimers(){
-  clearTimeout(pingTimer); clearTimeout(testTimer); clearInterval(cdTimer);
+  clearTimeout(pingTimer); clearInterval(cdTimer);
+  pingTimer=null;cdTimer=null;
 }
 
-function schedulePing(delayMins){
+function nextSlot(previous,interval,now=Date.now()){
+  if(!Number.isFinite(previous)||previous==null) return now+interval;
+  if(previous>now) return previous;
+  return previous+Math.max(1,Math.floor((now-previous)/interval)+1)*interval;
+}
+function armSchedule(){
   clearTimeout(pingTimer);
-  const ms=delayMins*60*1000;
-  nextPingAt=Date.now()+ms;
-  pingTimer=setTimeout(()=>{ if(!paused&&!testing) runPingCheck(); }, ms);
-  updateIdleStatus();
+  if(paused) return;
+  const due=[nextPingAt,retryMode?null:fullTestDueEpoch].filter(v=>Number.isFinite(v));
+  if(!due.length) return;
+  pingTimer=setTimeout(()=>{
+    if(paused) return;
+    if(testing||pinging){pingTimer=setTimeout(armSchedule,1000);return;}
+    runPingCheck();
+  },Math.max(0,Math.min(...due)-Date.now()));
 }
-
-function scheduleTest(delayMins){
-  clearTimeout(testTimer);
+function schedulePing(delayMins,absolute=false){
+  if(paused||!pageScheduling) return;
   const ms=delayMins*60*1000;
-  nextTestAt=Date.now()+ms;
-  // fullTestDueEpoch is an absolute epoch checked on each ping success; cleared once the test fires
-  fullTestDueEpoch=nextTestAt;
+  nextPingAt=absolute?nextSlot(nextPingAt,ms):Date.now()+ms;
+  armSchedule();updateIdleStatus();
+}
+function scheduleTest(delayMins,absolute=false){
+  if(paused||!pageScheduling) return;
+  const ms=delayMins*60*1000;
+  nextTestAt=absolute?nextSlot(nextTestAt,ms):Date.now()+ms;
+  fullTestDueEpoch=nextTestAt;armSchedule();
 }
 
 function startSchedules(){
+  if(paused||!pageScheduling) return;
   clearAllTimers();
   retryMode=false; retryCount=0;
   schedulePing(getPingInterval());
   scheduleTest(getTestInterval());
-  cdTimer=setInterval(()=>{ if(!testing&&!paused) updateIdleStatus(); }, 30000);
+  cdTimer=setInterval(()=>{
+    if(!paused&&!testing&&!pinging&&nextPingAt&&Date.now()>nextPingAt+60000) schedulePing(1);
+    if(!testing&&!paused) updateIdleStatus();
+  }, 30000);
+}
+
+
+// ── independent connectivity confirmation ─────────
+// Cloudflare speed-test failure alone does not prove an Internet dropout.
+// Check the three configured URL-monitor hosts using lightweight no-cors GET requests.
+// A successful response-header arrival is sufficient evidence of reachability; abort
+// immediately so page bodies are not intentionally consumed. A dropout is confirmed
+// only when none respond on two checks 10 s apart.
+async function probeUrl(raw){
+  const ctrl=new AbortController();pendingRequests.add(ctrl);
+  let timedOut=false;
+  const tid=setTimeout(()=>{timedOut=true;ctrl.abort();},URL_TIMEOUT_MS);
+  const t0=performance.now();
+  try{
+    await fetch(urlNormalize(raw),{method:'GET',mode:'no-cors',cache:'no-store',signal:ctrl.signal});
+    ctrl.abort();
+    return {url:raw,state:'up',ms:Math.round(performance.now()-t0)};
+  }catch(err){
+    if(ctrl.signal.aborted&&!timedOut) throw new DOMException('Stopped','AbortError');
+    return {url:raw,state:timedOut?'timeout':'down',ms:Math.round(performance.now()-t0)};
+  }finally{clearTimeout(tid);pendingRequests.delete(ctrl);}
+}
+async function connectivityProbe(round='initial',generation=runGeneration){
+  const targets=DEFAULT_URL_TARGETS;
+  const results=await Promise.all(targets.map(probeUrl));
+  if(generation!==runGeneration) throw new DOMException('Stopped','AbortError');
+  const reachable=results.some(r=>r.state==='up');
+  results.forEach(r=>saveUrlLog({ts:fmtTS(new Date()),...r,conn_ok:reachable?true:null,round}));
+  return reachable;
+}
+async function classifyConnectivity(generation=runGeneration){
+  if(await connectivityProbe('initial',generation)) return 'online';
+  setStatus('No response — confirming...','pinging');
+  await new Promise(resolve=>setTimeout(resolve,DROPOUT_RECHECK_MS));
+  if(generation!==runGeneration) throw new DOMException('Stopped','AbortError');
+  if(await connectivityProbe('confirm',generation)) return 'online';
+  const rows=loadUrlLogs();
+  rows.slice(-3).forEach(r=>r.conn_ok=false);
+  try{localStorage.setItem(URL_LSKEY,JSON.stringify(rows));}catch{storageWarning();}
+  return 'dropout';
 }
 
 // ── fast ping check ────────────────────────────────
-async function timedFetch(url,opts={}){
+async function timedFetch(url,opts={},timeoutMs=TIMEOUT_SECS*1000){
   const ctrl=new AbortController();
-  const tid=setTimeout(()=>ctrl.abort(), TIMEOUT_SECS*1000);
+  pendingRequests.add(ctrl);
+  const tid=setTimeout(()=>ctrl.abort(), timeoutMs);
   try{
     const t0=performance.now();
     const r=await fetch(url,{...opts,cache:'no-store',signal:ctrl.signal});
     if(!opts.skipBody) await r.arrayBuffer();
     return performance.now()-t0;
-  }finally{ clearTimeout(tid); }
+  }finally{ clearTimeout(tid);pendingRequests.delete(ctrl); }
+}
+
+// Shared unloaded HTTP latency for ping-only and full browser tests.
+function summarizeLatency(samples){
+  const valid=samples.filter(v=>Number.isFinite(v)&&v>0&&v<=VALID_PING_MAX).sort((a,b)=>a-b);
+  if(!valid.length) throw new Error('no valid latency samples');
+  const mid=Math.floor(valid.length/2);
+  const median=valid.length%2?valid[mid]:(valid[mid-1]+valid[mid])/2;
+  return {median:Math.round(median*10)/10,
+          average:Math.round(valid.reduce((a,b)=>a+b,0)/valid.length*10)/10,
+          samples:valid};
+}
+async function measureLatency(generation){
+  const times=[];
+  for(let i=0;i<PING_QUICK_COUNT;i++){
+    if(generation!==runGeneration) throw new DOMException('Test cancelled','AbortError');
+    try{ times.push(await timedFetch(`${CF}/__down?bytes=0`,{method:'HEAD',skipBody:true},VALID_PING_MAX)); }catch{}
+  }
+  if(generation!==runGeneration) throw new DOMException('Test cancelled','AbortError');
+  return summarizeLatency(times);
 }
 
 async function runPingCheck(){
-  if(testing||paused) return;
-  // skip standalone ping if full test is due now or within the next ping interval
-  if(fullTestDueEpoch&&(fullTestDueEpoch-Date.now())<=getPingInterval()*60000){
-    fullTestDueEpoch=null;
-    await runFullTest();
-    scheduleTest(getTestInterval());
-    schedulePing(getPingInterval());
-    return;
-  }
+  if(testing||pinging||paused) return;
+  pinging=true;
+  const generation=runGeneration;
+  try{
   setStatus('Pinging...','pinging');
   const ts=fmtTS(new Date());
   const machine=getMachine();
@@ -752,13 +923,8 @@ async function runPingCheck(){
   const platform=getPlatform().str;
   const conn=getConnType();
   try{
-    const times=[];
-    for(let i=0;i<PING_QUICK_COUNT;i++){
-      try{ times.push(await timedFetch(`${CF}/__down?bytes=0`,{method:'HEAD',skipBody:true})); }catch{}
-    }
-    if(!times.length) throw new Error('no-response');
-    times.sort((a,b)=>a-b);
-    const ping=Math.round(times[Math.floor(times.length/2)]*10)/10;
+    const latency=await measureLatency(generation);
+    const ping=latency.median;
     const wasInRetry=retryMode;
     retryMode=false; retryCount=0; lastPingOk=true;
     if(wasInRetry) addStateEvent('RECOVERED');
@@ -767,65 +933,162 @@ async function runPingCheck(){
     if(fullTestDueEpoch&&Date.now()>=fullTestDueEpoch){
       fullTestDueEpoch=null;
       await runFullTest();
-      scheduleTest(getTestInterval());
+      if(generation!==runGeneration) return;
+      scheduleTest(getTestInterval(),true);
     }
-    schedulePing(getPingInterval());
+    schedulePing(getPingInterval(),true);
     updateIdleStatus();
   }catch(err){
-    lastPingOk=false;
-    const note=('ping-fail '+(err.message||'')).slice(0,28).trim();
-    addEntry({_t:'ping',timestamp:ts,machine,os,platform,conn_type:conn,
-              status:'fail',ping_ms:'',download_mbps:'',upload_mbps:'',note});
-    if(!retryMode){ retryMode=true; retryCount=0; addStateEvent('OFFLINE'); }
-    retryCount++;
-    if(retryCount>=MAX_RETRIES){
+    if(generation!==runGeneration) return;
+    const classification=await classifyConnectivity(generation);
+    if(generation!==runGeneration) return;
+    if(classification==='online'){
+      // Measurement/tool failure: log it, but do not graph a data point.
+      lastPingOk=true;
       retryMode=false; retryCount=0;
-      addStateEvent('OFFLINE-EXTENDED');
-      schedulePing(getPingInterval());
-    } else {
-      schedulePing(RETRY_INTERVAL_MINS);
+      const note=('fail: ping '+(err.message||'')).slice(0,120).trim();
+      addEntry({_t:'ping',timestamp:ts,machine,os,platform,conn_type:conn,
+                status:'fail',conn_ok:true,ping_ms:'',download_mbps:'',upload_mbps:'',note});
+      if(fullTestDueEpoch&&Date.now()>=fullTestDueEpoch){
+        fullTestDueEpoch=null;
+        await runFullTest();
+        if(generation!==runGeneration) return;
+        scheduleTest(getTestInterval(),true);
+      }
+      schedulePing(getPingInterval(),true);
+    }else{
+      // Confirmed connectivity dropout: graph a dropout marker and retry soon.
+      lastPingOk=false;
+      const note='dropout: confirmed';
+      addEntry({_t:'ping',timestamp:ts,machine,os,platform,conn_type:conn,
+                status:'dropout',ping_ms:'',download_mbps:'',upload_mbps:'',note});
+      if(!retryMode){ retryMode=true; retryCount=0; addStateEvent('DROPOUT'); }
+      retryCount++;
+      if(retryCount>=MAX_RETRIES){
+        retryMode=false; retryCount=0;
+        addStateEvent('DROPOUT-EXTENDED');
+        scheduleTest(getTestInterval(),true);
+        schedulePing(getPingInterval(),true);
+      }else{
+        schedulePing(RETRY_INTERVAL_MINS);
+      }
     }
     updateIdleStatus();
   }
-  updateStats();
+  }catch(err){
+    if(generation===runGeneration){setStatus('Ping check failed: '+err.message);scheduleTest(getTestInterval(),true);schedulePing(getPingInterval(),true);}
+  }finally{
+    pinging=false;
+    updateStats();
+  }
 }
 
-// ── full speed test (3-pass averaged) ────────────
-async function measurePing3(){
-  const times=[];
-  for(let i=0;i<PING_PROBE_COUNT;i++){
-    try{ times.push(await timedFetch(`${CF}/__down?bytes=0`,{method:'HEAD',skipBody:true})); }catch{}
-  }
-  if(!times.length) throw new Error('no response');
-  times.sort((a,b)=>a-b);
-  return Math.round(times[Math.floor(times.length/2)]*10)/10;
+// ── full speed test: M-Lab NDT7 ──────────────────
+function clientMbps(m){
+  return Number(m?.MeanClientMbps||0);
 }
-async function measureDownload(prog){
-  const sizes=DOWNLOAD_SIZES;
-  let tb=0,tm=0;
-  for(let i=0;i<sizes.length;i++){
-    prog(i/sizes.length);
-    tm+=await timedFetch(`${CF}/__down?bytes=${sizes[i]}`);
-    tb+=sizes[i];
+
+async function runNdt7(){
+  setStatus('M-Lab: loading NDT7...','testing');
+  setProgress(5,true);
+  const ndt7=window.ndt7;
+  if(!ndt7) throw new Error('Local NDT7 client could not load');
+  let down=0, up=0, ping='', server='';
+  let lastNdtError='';
+  // Blob workers run from file:// pages, so the app needs no local server.
+  const blobUrls=[];
+  const workerUrl=(name,fallback)=>{
+    const src=window.NDT7_WORKER_SOURCES?.[name];
+    if(!src) return fallback;
+    const url=URL.createObjectURL(new Blob([src],{type:'text/javascript'}));
+    blobUrls.push(url);
+    return url;
+  };
+  const config={
+    userAcceptedDataPolicy:true,
+    downloadworkerfile:workerUrl('download',NDT7_DOWN_WORKER),
+    uploadworkerfile:workerUrl('upload',NDT7_UP_WORKER),
+    metadata:{client_name:'speed-monitor',client_version:VERSION}
+  };
+  const callbacks={
+    error:msg=>{ lastNdtError=String(msg||'NDT7 error'); },
+    serverChosen:srv=>{
+      const city=srv?.location?.city||srv?.location?.metro||'';
+      const country=srv?.location?.country||'';
+      server=[city,country].filter(Boolean).join(', ')||srv?.machine||srv?.hostname||'';
+    },
+    downloadStart:()=>{ setStatus('M-Lab: download...','testing'); setProgress(15); },
+    downloadComplete:m=>{
+      down=clientMbps(m?.LastClientMeasurement);
+      const minRttUs=Number(m?.LastServerMeasurement?.TCPInfo?.MinRTT||0);
+      if(minRttUs>0) ping=Math.round(minRttUs/100)/10;
+      setProgress(60);
+    },
+    uploadStart:()=>{ setStatus('M-Lab: upload...','testing'); setProgress(65); },
+    uploadComplete:m=>{
+      up=clientMbps(m?.LastClientMeasurement);
+      setProgress(95);
+    }
+  };
+  const NativeWorker=window.Worker, workers=new Set();
+  let cancelled=false, rejectCancellation;
+  const cancellation=new Promise((_,reject)=>{rejectCancellation=reject;});
+  const cancel=()=>{
+    cancelled=true;
+    workers.forEach(w=>{if(w.resolve) w.resolve(1);w.terminate();});
+    rejectCancellation(new DOMException('Test cancelled','AbortError'));
+  };
+  const TrackedWorker=function(url,opts){
+    if(cancelled) throw new DOMException('Test cancelled','AbortError');
+    const w=new NativeWorker(url,opts);workers.add(w);
+    w.addEventListener('error',()=>{lastNdtError='Worker failed to load: '+url;if(w.resolve) w.resolve(1);});
+    return w;
+  };
+  for(const key of Object.keys(callbacks)){
+    const callback=callbacks[key];callbacks[key]=(...args)=>{if(!cancelled) callback(...args);};
   }
-  prog(1);
-  return Math.round(tb*8/(tm/1000)/1e6*100)/100;
-}
-async function measureUpload(prog){
-  const sizes=UPLOAD_SIZES;
-  let tb=0,tm=0;
-  for(let i=0;i<sizes.length;i++){
-    prog(i/sizes.length);
-    const body=new Uint8Array(sizes[i]).fill(65);
-    tm+=await timedFetch(`${CF}/__up`,{method:'POST',body,skipBody:true});
-    tb+=sizes[i];
+  window.Worker=TrackedWorker;cancelNdt7=cancel;
+  const timeout=setTimeout(()=>{lastNdtError='NDT7 timeout';cancel();},70000);
+  try{
+    const urls=await Promise.race([ndt7.discoverServerURLs(config,callbacks),cancellation]);
+    for(const direction of ['download','upload']){
+      const url=urls?.['///ndt/v7/'+direction];
+      if(typeof url!=='string'||!/^wss:\/\//.test(url)){
+        throw new Error(lastNdtError||'M-Lab discovery returned no valid '+direction+' URL');
+      }
+    }
+    if(cancelled) throw new DOMException('Test cancelled','AbortError');
+    const downRc=await Promise.race([ndt7.downloadTest(config,callbacks,Promise.resolve(urls)),cancellation]);
+    if(cancelled) throw new DOMException('Test cancelled','AbortError');
+    const upRc=await Promise.race([ndt7.uploadTest(config,callbacks,Promise.resolve(urls)),cancellation]);
+    if(downRc!==0||upRc!==0) throw new Error(lastNdtError||`NDT7 error ${downRc}/${upRc}`);
+  }finally{
+    cancelled=true;clearTimeout(timeout);
+    workers.forEach(w=>w.terminate());
+    blobUrls.forEach(u=>URL.revokeObjectURL(u));
+    if(window.Worker===TrackedWorker) window.Worker=NativeWorker;
+    if(cancelNdt7===cancel) cancelNdt7=null;
   }
-  prog(1);
-  return Math.round(tb*8/(tm/1000)/1e6*100)/100;
+  const candidate={download_mbps:down,upload_mbps:up,ping_ms:ping};
+  if(!validFullMeasurement(candidate)){
+    throw new Error(`NDT7 rejected implausible result down=${down} up=${up} ping=${ping||'--'}`);
+  }
+  return {
+    down:Math.round(down*100)/100,
+    up:Math.round(up*100)/100,
+    ping,
+    server
+  };
 }
 
 async function runFullTest(){
+  if(Date.now()<fullCooldownUntil){
+    setStatus('M-Lab rate limited; full tests resume after '+fmtTime(new Date(fullCooldownUntil)));
+    return;
+  }
   if(testing) return;
+  if(paused) return;
+  const generation=runGeneration;
   testing=true; setTesting(true);
   setProgress(2,true);
   const ts=fmtTS(new Date());
@@ -833,29 +1096,34 @@ async function runFullTest(){
   const os=getOsCode();
   const platform=getPlatform().str;
   const conn=getConnType();
-  const passes=FULL_TEST_PASSES;
-  const downs=[],ups=[],pings=[];
   try{
-    for(let p=0;p<passes;p++){
-      const base=p/passes;
-      setStatus(`Pass ${p+1}/${passes} ping...`,'testing'); setProgress(base*100+2);
-      pings.push(await measurePing3());
-      setStatus(`Pass ${p+1}/${passes} down...`,'testing');
-      downs.push(await measureDownload(f=>setProgress(base*100+4+f*(100/passes)*0.55)));
-      setStatus(`Pass ${p+1}/${passes} up...`,'testing');
-      ups.push(await measureUpload(f=>setProgress(base*100+4+(0.55+f*0.4)*(100/passes))));
-    }
-    const avg=arr=>arr.reduce((s,v)=>s+v,0)/arr.length;
-    const ping=Math.round(avg(pings)*10)/10;
-    const down=Math.round(avg(downs)*100)/100;
-    const up  =Math.round(avg(ups)*100)/100;
-    setProgress(100);
+    const latency=await measureLatency(generation);
+    const result=navigator.locks
+      ?await navigator.locks.request('speedmon-ndt7',{ifAvailable:true},lock=>{
+        if(!lock) throw new Error('NDT7 is already running in another tab');
+        return runNdt7();
+      }):await runNdt7();
+    if(generation!==runGeneration) return;
+    lastPingOk=true;setProgress(100);
     addEntry({_t:'data',timestamp:ts,machine,os,platform,conn_type:conn,
-              status:'ok',ping_ms:ping,download_mbps:down,upload_mbps:up,note:''});
+              status:'ok',ping_ms:latency.median,download_mbps:result.down,
+              upload_mbps:result.up,note:'',server:result.server||''});
   }catch(err){
-    const note=('speed-fail '+(err.message||'')).slice(0,28).trim();
-    addEntry({_t:'data',timestamp:ts,machine,os,platform,conn_type:conn,
-              status:'fail',ping_ms:'',download_mbps:'',upload_mbps:'',note});
+    if(generation!==runGeneration) return;
+    if(/HTTP 429/.test(err.message||'')) setFullCooldown(Date.now()+30*60000);
+    const classification=await classifyConnectivity(generation).catch(()=> 'unknown');
+    if(generation!==runGeneration) return;
+    if(classification==='dropout'){
+      lastPingOk=false;
+      addEntry({_t:'data',timestamp:ts,machine,os,platform,conn_type:conn,
+                status:'dropout',ping_ms:'',download_mbps:'',upload_mbps:'',note:'dropout: confirmed'});
+      addStateEvent('DROPOUT');
+    }else{
+      lastPingOk=classification==='online'?true:null;
+      const note=('fail: '+(err.message||'ndt7')).slice(0,120).trim();
+      addEntry({_t:'data',timestamp:ts,machine,os,platform,conn_type:conn,
+                status:'fail',conn_ok:classification==='online'?true:null,ping_ms:'',download_mbps:'',upload_mbps:'',note});
+    }
   }finally{
     testing=false; setTesting(false);
     setProgress(0,false);
@@ -866,15 +1134,20 @@ async function runFullTest(){
 
 // manual "Full Test" button
 async function runManualTest(){
-  if(testing||paused) return;
-  clearTimeout(testTimer); fullTestDueEpoch=null;
+  if(testing||pinging||paused) return;
+  const generation=runGeneration;
+  fullTestDueEpoch=null;
   await runFullTest();
+  if(generation!==runGeneration) return;
   scheduleTest(getTestInterval());
+  schedulePing(getPingInterval());
 }
 
 // ── log rendering ─────────────────────────────────
 function addEntry(e){
-  logs.push(e); saveLogs();
+  e=normalizeRecord({...e,epoch:e.epoch??Date.now()/1000});
+  if(!e) return;
+  logs.push(e);logs.sort((a,b)=>recordEpoch(a)-recordEpoch(b));saveLogs();
   prependRow(makeRow(e));
   updateCharts();
 }
@@ -885,11 +1158,12 @@ function addStateEvent(ev){
     const plat=getPlatform();
     txt+=` machine=${machine} ping=${getPingInterval()} test=${getTestInterval()} ${plat.os} ${getConnType()}`;
   }
-  addEntry({_t:'evt',_txt:txt});
+  addEntry({_t:'evt',timestamp:ts,_txt:txt,status:'ok'});
 }
 
 // ── compact network identifier ────────────────────
 function compactNet(e){
+  if(e.network&&e.network!=='Not recorded'&&e.network!=='unknown') return (e.conn_type&&e.conn_type!=='unknown'?e.conn_type+' * ':'')+e.network;
   const conn=e.conn_type||e.iface_type||'';
   const iface=e.iface_name||'';
   if(conn==='wifi'&&iface)     return 'wifi * '+iface;
@@ -915,14 +1189,18 @@ function showDetail(e, rowEl){
     ['Platform', e.platform||e.os||'--'],
     ['Conn',     e.conn_type||e.iface_type||'--'],
     ['Type',     isPing?'ping':'speed'],
-    ['Status',   ok?'ok':'FAIL', ok?'dp-ok':'dp-fail'],
+    ['Status',   ok?'ok':e.status==='dropout'?'DROPOUT':'FAIL', ok?'dp-ok':'dp-fail'],
     (!isPing&&ok)?['Down', (parseFloat(e.download_mbps)||0).toFixed(1)+' Mbps']:null,
     (!isPing&&ok)?['Up',   (parseFloat(e.upload_mbps)||0).toFixed(1)+' Mbps']:null,
-    ok?['Ping',   e.ping_ms+' ms']:null,
+    ok&&e.ping_ms!==''&&e.ping_ms!=null?['Ping',Math.round(Number(e.ping_ms))+' ms']:null,
+    e.network?['Network',e.network]:null,
+    ['Source',e._src?'background collector':'this browser'],
+    e.provider?['Tool',e.provider]:null,
+    e.server?['Server',e.server]:null,
     e.note?['Note', e.note]:null,
   ].filter(Boolean);
   popup.innerHTML=rows.map(r=>
-    `<div class="dp-row"><span class="dp-lbl">${r[0]}</span><span class="dp-val ${r[2]||''}">${r[1]}</span></div>`
+    `<div class="dp-row"><span class="dp-lbl">${r[0]}</span><span class="dp-val ${r[2]||''}">${esc(r[1])}</span></div>`
   ).join('');
   document.body.appendChild(popup);
   activePopup=popup;
@@ -930,7 +1208,7 @@ function showDetail(e, rowEl){
   let top=rect.bottom+4;
   if(top+220>window.innerHeight) top=rect.top-220;
   popup.style.top=Math.max(4,top)+'px';
-  popup.style.left=Math.min(rect.left+18,window.innerWidth-350)+'px';
+  popup.style.left=Math.max(4,Math.min(rect.left+18,window.innerWidth-popup.offsetWidth-4))+'px';
   setTimeout(()=>document.addEventListener('click',hideDetail,{once:true}),10);
 }
 function hideDetail(){
@@ -945,6 +1223,7 @@ function makeRow(e){
     return div;
   }
   const ok=e.status==='ok';
+  const dropout=e.status==='dropout';
   const isPing=e._t==='ping';
   if(isPing){
     if(ok){
@@ -957,7 +1236,7 @@ function makeRow(e){
         `<span class="r-net">${cn}</span>`+
         `<span class="r-down" style="color:var(--dim)">—</span>`+
         `<span class="r-up"  style="color:var(--dim)">—</span>`+
-        `<span class="r-ping" style="color:#c8b060">${esc(e.ping_ms)}</span>`;
+        `<span class="r-ping" style="color:#c8b060">${esc(Math.round(Number(e.ping_ms)))}</span>`;
     } else {
       // prominent ping-fail rows
       div.className='log-row has-detail row-ping-fail';
@@ -968,15 +1247,16 @@ function makeRow(e){
         `<span class="r-net">${cn}</span>`+
         `<span class="r-down" style="color:var(--fail)">—</span>`+
         `<span class="r-up"  style="color:var(--fail)">—</span>`+
-        `<span class="r-ping" style="color:var(--fail)">FAIL</span>`;
+        `<span class="r-ping" style="color:var(--fail)">${dropout?'DROPOUT':'FAIL'}</span>`;
     }
   } else {
     // full test row
     div.className='log-row has-detail '+(ok?'row-ok':'row-fail');
     const cn=esc(compactNet(e));
-    const dl=ok?String(Math.round(parseFloat(e.download_mbps)||0)):'—';
-    const ul=ok?String(Math.round(parseFloat(e.upload_mbps)||0)):'—';
-    const pg=ok?String(Math.round(parseFloat(e.ping_ms)||0)):'—';
+    const dl=ok?String(Math.round(parseFloat(e.download_mbps)||0)):(dropout?'DROP':'--');
+    const ul=ok?String(Math.round(parseFloat(e.upload_mbps)||0)):'--';
+    div.title=ok?'Full bandwidth test succeeded':dropout?'Confirmed connectivity outage':(e.note||'Bandwidth measurement failed; this does not establish an Internet outage');
+    const pg=ok?(e.ping_ms!==''&&e.ping_ms!=null?String(Math.round(Number(e.ping_ms))):'--'):(dropout?'DROPOUT':'TEST FAIL');
     div.innerHTML=
       `<span class="icon">${ok?'●':'✕'}</span>`+
       `<span class="r-ts">${esc(e.timestamp)}</span>`+
@@ -996,31 +1276,46 @@ function prependRow(el){
 function rebuildLog(){
   const log=document.getElementById('log');
   log.innerHTML='';
-  [...logs].reverse().forEach(e=>log.appendChild(makeRow(e)));
+  [...visibleLogs()].filter(e=>!e._noLog).reverse().forEach(e=>log.appendChild(makeRow(e)));
 }
 
 // ── stats ─────────────────────────────────────────
 function updateStats(){
-  const cutoff=chartWindowMs!==CHART_WINDOW_ALL?Date.now()-chartWindowMs:0;
-  const inWindow=e=>{ const d=parseTS(e.timestamp); return !cutoff||( d&&d.getTime()>=cutoff); };
-  const fullOk=logs.filter(e=>e._t==='data'&&e.status==='ok'&&inWindow(e));
-  const fullAll=logs.filter(e=>e._t==='data'&&inWindow(e));
-  const pingAll=logs.filter(e=>e._t==='ping'&&inWindow(e));
+  // Headline statistics are always a rolling 24 h view; the chart window is independent.
+  const cutoff=Date.now()-24*HOUR_MS;
+  const inWindow=e=>{const t=recordEpoch(e);return t>=cutoff&&t<=Date.now();};
+  const shown=visibleLogs();
+  const fullOk=shown.filter(e=>e._t==='data'&&e.status==='ok'&&inWindow(e));
+  const fullAll=shown.filter(e=>e._t==='data'&&inWindow(e));
+  const pingAll=shown.filter(e=>e._t==='ping'&&inWindow(e));
+
   document.getElementById('avPings').textContent=pingAll.length;
   document.getElementById('avTests').textContent=fullAll.length;
-  if(!fullOk.length){ document.getElementById('avDown').textContent='—';
+
+  if(fullOk.length){
+    const n=fullOk.length;
+    const ad=(fullOk.reduce((sum,e)=>sum+parseFloat(e.download_mbps||0),0)/n).toFixed(1);
+    const au=(fullOk.reduce((sum,e)=>sum+parseFloat(e.upload_mbps||0),0)/n).toFixed(1);
+    const pingVals=fullOk.map(e=>parseFloat(e.ping_ms)).filter(v=>Number.isFinite(v));
+    const ap=pingVals.length?Math.round(pingVals.reduce((a,b)=>a+b,0)/pingVals.length):null;
+    document.getElementById('avDown').textContent=ad;
+    document.getElementById('avUp').textContent=au;
+    document.getElementById('avPing').textContent=ap===null?'--':ap+'ms';
+  }else{
+    document.getElementById('avDown').textContent='—';
     document.getElementById('avUp').textContent='—';
-    document.getElementById('avPing').textContent='—'; return; }
-  const n=fullOk.length;
-  const ad=(fullOk.reduce((s,e)=>s+parseFloat(e.download_mbps||0),0)/n).toFixed(1);
-  const au=(fullOk.reduce((s,e)=>s+parseFloat(e.upload_mbps||0),0)/n).toFixed(1);
-  const ap=Math.round(fullOk.reduce((s,e)=>s+parseFloat(e.ping_ms||0),0)/n);
-  const upt=fullAll.length?Math.round(100*n/fullAll.length):100;
-  document.getElementById('avDown').textContent  =ad;
-  document.getElementById('avUp').textContent    =au;
-  document.getElementById('avPing').textContent  =ap+'ms';
-  document.getElementById('avUptime').textContent=upt+'%';
-  document.getElementById('avUptime').style.color=upt<90?'var(--fail)':'var(--lbl)';
+    document.getElementById('avPing').textContent='—';
+  }
+
+  // Availability uses only observations that actually establish connectivity state.
+  // Measurement/tool failures are unknown, not downtime, and are excluded.
+  const availabilityObs=shown.filter(e=>
+    (e._t==='ping'||e._t==='data')&&inWindow(e)&&(e.status==='ok'||e.status==='dropout'||e.conn_ok===true));
+  const reachable=availabilityObs.filter(e=>e.status==='ok'||e.conn_ok===true).length;
+  const availability=availabilityObs.length?Math.round(100*reachable/availabilityObs.length):null;
+  const avEl=document.getElementById('avUptime');
+  avEl.textContent=availability===null?'—':availability+'%';
+  avEl.style.color=availability!==null&&availability<90?'var(--fail)':'var(--lbl)';
 }
 
 // ── chart tick step (dynamic by window) ──────────
@@ -1038,6 +1333,7 @@ function chartTickStepFor(windowMs){
 let pingVisible=false;
 function setPingVisible(v){
   pingVisible=v;
+  if(!chartSpeed) return;
   chartSpeed.data.datasets[0].hidden=!v;
   chartSpeed.options.scales.yP.display=v;
   chartSpeed.update();
@@ -1049,7 +1345,7 @@ function initCharts(){
   const BG2='#1a1450';    // --bg2, used to blank the ping legend slot when hidden
   const ptStyle='rectRot'; // diamond points
   const ptR=1.5, ptRH=3;
-  chartSpeed=new Chart(document.getElementById('cSpeed'),{type:'line',data:{labels:[],datasets:[
+  chartSpeed=new Chart(document.getElementById('cSpeed'),{type:'line',plugins:[annotationLines],data:{labels:[],datasets:[
     {label:'Ping ms',data:[],yAxisID:'yP',hidden:true,
      borderColor:COL_PING_LINE,backgroundColor:'rgba(144,96,16,.04)',
      pointBackgroundColor:COL_PING,pointBorderColor:COL_PING,
@@ -1067,7 +1363,7 @@ function initCharts(){
      tension:0,borderWidth:1},
   ]},options:{
     animation:false,
-    plugins:{legend:{labels:{
+    plugins:{tooltip:{callbacks:{label:ctx=>ctx.raw?.status==='dropout'?'Confirmed dropout':`${ctx.dataset.label}: ${ctx.parsed.y}`}},legend:{labels:{
       color:tc,font:{size:10},boxWidth:8,padding:5,
       generateLabels(chart){
         const items=Chart.defaults.plugins.legend.labels.generateLabels(chart);
@@ -1119,9 +1415,9 @@ function initCharts(){
          }},
       yS:{position:'left',grid:{color:gc},ticks:{color:tc,font:{size:10}},
           min:0,max:CHART_Y_MAX,title:{display:true,text:'Mb/s',color:tc,font:{size:10}}},
-      yP:{display:false,position:'right',grid:{drawOnChartArea:false},
+      yP:{display:false,position:'right',reverse:true,grid:{drawOnChartArea:false},
           ticks:{color:COL_PING,font:{size:10}},
-          min:0,max:CHART_Y_MAX,title:{display:true,text:'ms',color:COL_PING,font:{size:10}}}
+          min:0,max:PING_Y_MAX,title:{display:true,text:'ms',color:COL_PING,font:{size:10}}}
     },
     responsive:true,maintainAspectRatio:false
   }});
@@ -1130,59 +1426,68 @@ function initCharts(){
 
 function getChartRecords(){
   // includes failed entries so dropouts plot as y=0
-  const all=logs.filter(e=>e._t==='data');
+  const all=visibleLogs().filter(e=>e._t==='data');
   if(!all.length) return [];
   if(chartWindowMs===CHART_WINDOW_ALL) return all;
   const cutoff=Date.now()-chartWindowMs;
-  const windowed=all.filter(e=>{ const d=parseTS(e.timestamp); return d&&d.getTime()>=cutoff; });
-  return windowed.length?windowed:all.slice(-1);
+  const windowed=all.filter(e=>{ const d=recordEpoch(e)?new Date(recordEpoch(e)):null; return d&&d.getTime()>=cutoff; });
+  return windowed;
 }
 function getPingOnlyRecords(){
-  // includes failed pings so dropouts plot at CHART_Y_MAX
-  const pings=logs.filter(e=>e._t==='ping');
+  // includes ping records; chart logic displays only good points and confirmed dropouts
+  const pings=visibleLogs().filter(e=>e._t==='ping');
   if(!pings.length) return [];
   if(chartWindowMs===CHART_WINDOW_ALL) return pings;
   const cutoff=Date.now()-chartWindowMs;
-  return pings.filter(e=>{ const d=parseTS(e.timestamp); return d&&d.getTime()>=cutoff; });
+  return pings.filter(e=>{ const d=recordEpoch(e)?new Date(recordEpoch(e)):null; return d&&d.getTime()>=cutoff; });
 }
 
 function updateCharts(){
+  if(!chartSpeed) return;
   const rec=getChartRecords();
   // use {x: epochMs, y: value} for true linear time axis — no pre-fill needed
   const pingRec=[...rec,...getPingOnlyRecords()].sort((a,b)=>{
-    const da=parseTS(a.timestamp),db=parseTS(b.timestamp);
+    const da=new Date(recordEpoch(a)),db=new Date(recordEpoch(b));
     return (da?da.getTime():0)-(db?db.getTime():0);
   });
-  // ping: ok entries use measured ms; failed pings spike to top of scale (visible dropout)
+  // ping: graph only valid measurements or independently confirmed dropouts.
+  // Ordinary test/tool failures remain in the log but create no graph point.
   const pingPts=[], pingColors=[];
   for(const e of pingRec){
-    const d=parseTS(e.timestamp); if(!d) continue;
-    const ok=e.status==='ok';
-    const v=ok?parseFloat(e.ping_ms):CHART_Y_MAX;
-    if(isNaN(v)) continue;
-    pingPts.push({x:d.getTime(),y:Math.min(CHART_Y_MAX,v)});
-    pingColors.push(ok?COL_PING:COL_FAIL);
+    const d=recordEpoch(e)?new Date(recordEpoch(e)):null; if(!d) continue;
+    if(e.status==='ok'){
+      const v=parseFloat(e.ping_ms);
+      if(!Number.isFinite(v)){pingPts.push({x:d.getTime(),y:null});pingColors.push(COL_PING);continue;}
+      pingPts.push({x:d.getTime(),y:v});
+      pingColors.push(COL_PING);
+    }else if(e.status==='dropout'){
+      pingPts.push({x:d.getTime(),y:PING_Y_MAX,status:'dropout'});
+      pingColors.push(COL_FAIL);
+    }else{pingPts.push({x:d.getTime(),y:null});pingColors.push(COL_PING);}
   }
-  // speed: ok entries use measured Mb/s; failed tests plot at zero with red point
+  // Speed: valid measurements plot normally; ordinary test failures leave a gap.
+  // Independently confirmed dropouts plot as red zero markers.
   const downPts=[], downColors=[], upPts=[], upColors=[];
   for(const e of rec){
-    const d=parseTS(e.timestamp); if(!d) continue;
+    const d=recordEpoch(e)?new Date(recordEpoch(e)):null; if(!d) continue;
     const ok=e.status==='ok';
-    downPts.push({x:d.getTime(), y:ok?Math.min(CHART_Y_MAX,parseFloat(e.download_mbps)||0):0});
-    downColors.push(ok?COL_DOWN:COL_FAIL);
-    upPts.push({x:d.getTime(), y:ok?Math.min(CHART_Y_MAX,parseFloat(e.upload_mbps)||0):0});
-    upColors.push(ok?COL_UP:COL_FAIL);
+    const down=parseFloat(e.download_mbps);
+    const up=parseFloat(e.upload_mbps);
+    const dropout=e.status==='dropout';
+    downPts.push({x:d.getTime(), status:e.status, y:ok&&!isNaN(down)?down:(dropout?0:null)});
+    downColors.push(dropout?COL_FAIL:COL_DOWN);
+    upPts.push({x:d.getTime(), status:e.status, y:ok&&!isNaN(up)?up:(dropout?0:null)});
+    upColors.push(dropout?COL_FAIL:COL_UP);
   }
   // set x axis: if selected window has data use it; otherwise fall back to full data range
-  const allX=[...downPts.map(p=>p.x)];
+  const allX=[...downPts,...pingPts].map(p=>p.x).sort((a,b)=>a-b);
   if(allX.length>=1){
-    const t0=parseTS(rec[0].timestamp), t1=parseTS(rec[rec.length-1].timestamp);
+    const t0=new Date(allX[0]),t1=new Date(allX[allX.length-1]);
     const windowMin=Date.now()-chartWindowMs;
     const hasInWindow=allX.some(x=>x>=windowMin);
     // when no data in selected window, extend left to show oldest data so chart isn't blank
     const xMin=chartWindowMs===CHART_WINDOW_ALL?allX[0]:hasInWindow?windowMin:allX[0];
     const xMax=Date.now(); // right edge = now, so newest point never clips
-    const spanH=(xMax-xMin)/3600000;
     // ticks: 6h step always — gives 4 ticks/day; each tick shows HH:00 or M/D at midnight
     chartEffectiveWindowMs=chartWindowMs!==CHART_WINDOW_ALL?chartWindowMs:xMax-xMin;
     chartTickStep=chartTickStepFor(chartEffectiveWindowMs);
@@ -1190,10 +1495,15 @@ function updateCharts(){
     chartSpeed.options.scales.x.max=xMax;
     chartSpeed.options.scales.x.ticks.stepSize=chartTickStep;
     document.getElementById('rangeLabel').textContent=
-      t0&&t1?`${rec.length} pts  ${fmtDate(t0)}-${fmtDate(t1)}`:`${rec.length} pts`;
+      t0&&t1?`${rec.length} tests / ${pingPts.length} ping pts  ${fmtDate(t0)}-${fmtDate(t1)}`:`${rec.length} tests`;
   } else {
+    const span=chartWindowMs||24*HOUR_MS;
+    chartSpeed.options.scales.x.min=Date.now()-span;chartSpeed.options.scales.x.max=Date.now();
+    chartEffectiveWindowMs=span;chartTickStep=chartTickStepFor(span);
     document.getElementById('rangeLabel').textContent='no data';
   }
+  chartSpeed.options.scales.yS.max=Math.max(CHART_Y_MAX,...downPts.map(p=>p.y||0),...upPts.map(p=>p.y||0));
+  chartSpeed.options.scales.yP.max=Math.max(PING_Y_MAX,...pingPts.map(p=>p.y||0));
   chartSpeed.data.labels=[];
   chartSpeed.data.datasets[0].data=pingPts;
   chartSpeed.data.datasets[0].pointBackgroundColor=pingColors;
@@ -1218,147 +1528,164 @@ document.querySelectorAll('.win-btn').forEach(btn=>{
   };
 });
 
-// ── CSV export ────────────────────────────────────
-// Schema: timestamp,download_mbps,upload_mbps,ping_ms,machine,browser,iface,result
+// ── CSV export/import ─────────────────────────────
+// v2.3 schema:
+// timestamp,epoch,type,download_mbps,upload_mbps,ping_ms,machine,browser,iface,result,server
 function csvField(v){
   const s=String(v??'');
-  return (s.includes(',')||s.includes('"')||s.includes('\n'))
+  return (s.includes(',')||s.includes('"')||s.includes('\n')||s.includes('\r'))
     ?'"'+s.replace(/"/g,'""')+'"':s;
 }
+function resultField(e){
+  if(e.status==='ok') return '';
+  if(e.status==='dropout') return 'dropout: confirmed';
+  if(e.conn_ok===true&&!(e.note||'').includes('[conn_ok=true]')) return `fail: ${(e.note||'measurement').replace(/^fail:\s*/, '')} [conn_ok=true]`;
+  return (e.note||'fail: measurement').startsWith('fail:')?(e.note||'fail: measurement'):`fail: ${e.note||'measurement'}`;
+}
+function quarterName(d=new Date()){ return `${d.getFullYear()}-Q${Math.ceil((d.getMonth()+1)/3)}`; }
+function safeMachine(){ return getMachine().trim().replace(/\s+/g,'_').replace(/[^A-Za-z0-9_.-]/g,'_'); }
+
 function exportCSV(){
-  const hdr='timestamp,download_mbps,upload_mbps,ping_ms,machine,browser,iface,result';
-  const rows=logs.map(e=>{
-    if(e._t==='evt') return e._txt;
-    const result=e.status==='ok'?'':(e.note||'fail');
+  const hdr='timestamp,epoch,type,download_mbps,upload_mbps,ping_ms,machine,browser,iface,result,server';
+  const rows=logs.filter(e=>!e._src).map(e=>{
+    const d=recordEpoch(e)?new Date(recordEpoch(e)):null;
     return[
-      e.timestamp||'',
-      e.download_mbps||'',
-      e.upload_mbps||'',
-      e.ping_ms||'',
-      e.machine||'',
-      e.platform||e.os||'',
-      e.conn_type||e.iface_type||'',
-      result
+      e.timestamp||'', d?d.getTime()/1000:'', e._t==='data'?'full':e._t==='evt'?'event':e._t,
+      e.download_mbps??'', e.upload_mbps??'', e.ping_ms??'',
+      e.machine||'', e.platform||e.os||'', e.conn_type||e.iface_type||'',
+      e._t==='evt'?(e._txt||''):resultField(e), e.server||''
     ].map(csvField).join(',');
   });
   const blob=new Blob([[hdr,...rows].join('\n')],{type:'text/csv'});
   const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download=`speedtest_${getMachine()}_${new Date().toISOString().slice(0,10)}.csv`;
-  a.click(); URL.revokeObjectURL(a.href);
+  const url=URL.createObjectURL(blob);
+  a.href=url;
+  a.download=`speedtest_${safeMachine()}_${quarterName()}.csv`;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-// ── CSV helpers ───────────────────────────────────
-function parseCSVLine(line){
-  // handles quoted fields with embedded commas
-  const out=[]; let i=0, len=line.length;
-  while(i<=len){
-    if(i===len){ out.push(''); break; }
-    if(line[i]==='"'){
-      let j=i+1, cell='';
-      while(j<len){
-        if(line[j]==='"'&&line[j+1]==='"'){ cell+='"'; j+=2; }
-        else if(line[j]==='"'){ j++; break; }
-        else { cell+=line[j++]; }
-      }
-      out.push(cell);
-      if(line[j]===',') j++;
-      i=j;
-    } else {
-      const end=line.indexOf(',',i);
-      if(end===-1){ out.push(line.slice(i)); break; }
-      out.push(line.slice(i,end)); i=end+1;
-    }
+function parseCSV(txt){
+  const rows=[];let row=[],cell='',quoted=false;
+  txt=txt.replace(/^\uFEFF/,'');
+  for(let i=0;i<txt.length;i++){
+    const c=txt[i];
+    if(c==='"'){
+      if(quoted&&txt[i+1]==='"'){cell+='"';i++;}
+      else quoted=!quoted;
+    }else if(c===','&&!quoted){row.push(cell);cell='';}
+    else if((c==='\n'||c==='\r')&&!quoted){
+      row.push(cell);rows.push(row);row=[];cell='';
+      if(c==='\r'&&txt[i+1]==='\n') i++;
+    }else cell+=c;
   }
-  return out;
+  if(quoted) throw new Error('Unclosed quoted CSV field');
+  if(cell!==''||row.length){row.push(cell);rows.push(row);}
+  return rows;
 }
 
-// ── CSV import ────────────────────────────────────
-
-// v1.6 schema: date,time,machine,os,conn_type,iface_name,status,ping_ms,dl,ul,note
-function parseRowV16(p){
-  let [date,time,machine,os,conn_type,iface_name,status,ping_ms,download_mbps,upload_mbps,note]=p;
-  return {date,time,machine,os,platform:os,conn_type,iface_name,status,ping_ms,download_mbps,upload_mbps,note};
+function statusFromResult(result){
+  const s=(result||'').trim().toLowerCase();
+  if(s.startsWith('dropout')) return 'dropout';
+  if(s.startsWith('fail')) return 'fail';
+  return s?'fail':'ok';
 }
-
-// current schema: timestamp,dl,ul,ping,machine,browser,iface,result
+function parseRowV23(p){
+  const [ts,epoch,type,dl,ul,pm,mach,browser,iface,result,server]=p;
+  return {timestamp:ts,epoch,type:type||'full',machine:mach,platform:browser,conn_type:iface,
+          download_mbps:dl,upload_mbps:ul,ping_ms:pm,status:statusFromResult(result),
+          note:result||'',server:server||''};
+}
 function parseRowCurrent(p){
   const [ts,dl,ul,pm,mach,browser,iface,result]=p;
-  const d=parseTS(ts);
-  return {
-    date:d?fmtDateOnly(d):ts, time:d?fmtTimeOnly(d):'',
-    machine:mach, os:browser, platform:browser,
-    conn_type:iface, iface_name:'',
-    download_mbps:dl, upload_mbps:ul, ping_ms:pm,
-    status:(result&&result.trim())?'fail':'ok', note:result||''
-  };
+  const isPing=(!dl&&!ul)&&(pm||/ping/i.test(result||''));
+  return {timestamp:ts,type:isPing?'ping':'full',machine:mach,platform:browser,conn_type:iface,
+          download_mbps:dl,upload_mbps:ul,ping_ms:pm,status:statusFromResult(result),
+          note:result||'',server:''};
 }
-
-// v1.x schema: timestamp,machine,iface_type,iface_name,status,ping_ms,dl,ul,note
+function parseRowV16(p){
+  const [date,time,machine,os,conn_type,iface_name,status,ping_ms,download_mbps,upload_mbps,note]=p;
+  return {timestamp:`${date} ${time}`.trim(),type:(!download_mbps&&!upload_mbps)?'ping':'full',
+          machine,platform:os,conn_type,iface_name,status:status||'fail',ping_ms,
+          download_mbps,upload_mbps,note:note||'',server:''};
+}
 function parseRowV1x(p){
-  const d=parseTS(p[0]);
-  return {
-    date:d?fmtDateOnly(d):p[0], time:d?fmtTimeOnly(d):'',
-    machine:p[1]||'', os:'', platform:'',
-    conn_type:p[2]||'', iface_name:p[3]||'',
-    status:p[4]||'fail', ping_ms:p[5]||'',
-    download_mbps:p[6]||'', upload_mbps:p[7]||'', note:p[8]||''
-  };
+  return {timestamp:p[0],type:(!p[6]&&!p[7])?'ping':'full',machine:p[1]||'',
+          platform:'',conn_type:p[2]||'',iface_name:p[3]||'',status:p[4]||'fail',
+          ping_ms:p[5]||'',download_mbps:p[6]||'',upload_mbps:p[7]||'',note:p[8]||'',server:''};
+}
+function recordEpoch(e){
+  const n=Number(e.epoch);
+  if(e.epoch!==''&&e.epoch!=null&&Number.isFinite(n)&&n>0) return n<1e12?n*1000:n;
+  const d=parseTS(e.timestamp); return d?d.getTime():0;
+}
+function recordKey(e){
+  return JSON.stringify([recordEpoch(e),e.machine||'',e.platform||e.os||'',e._t||'',
+    e.server||'',e.status||'',e.download_mbps===''?'':Number(e.download_mbps),
+    e.upload_mbps===''?'':Number(e.upload_mbps),e.ping_ms===''?'':Number(e.ping_ms),
+    e._t==='evt'?e._txt||'':resultField(e)]);
 }
 
 function importCSV(txt){
-  const lines=txt.split('\n');
-  const seen=new Set(logs.filter(e=>e._t==='data'||e._t==='ping')
-    .map(e=>e.timestamp+'|'+e.machine));
+  let rows;try{rows=parseCSV(txt);}catch(err){alert('Import failed: '+err.message);return;}
+  const seen=new Set(logs.filter(e=>!e._src).map(recordKey));
   let added=0;
-  for(const raw of lines){
-    const line=raw.trim(); if(!line) continue;
-    if(line.startsWith('date,')) continue;       // v1.6 header
-    if(line.startsWith('timestamp,')) continue;  // v1.x / current header
-    if(line.startsWith('#')){ logs.push({_t:'evt',_txt:line}); added++; continue; }
-    const p=parseCSVLine(line); if(p.length<7) continue;
+  let schema='legacy';
+  for(const p of rows){
+    const line=p.join(',').trim();if(!line) continue;
+    if(line.startsWith('timestamp,epoch,type,')){ schema='v23'; continue; }
+    if(line.startsWith('date,')){ schema='v16'; continue; }
+    if(line.startsWith('timestamp,url,')){alert('URL diagnostics are separate from speed history.');return;}
+    if(line.startsWith('timestamp,')){schema=p[1]==='download_mbps'?'current':'legacy';continue;}
+    if(line.startsWith('#')){
+      const m=line.match(/^#\s+(.+?\s(?:AM|PM))\s+/i);
+      const e={_t:'evt',timestamp:m?m[1]:'',_txt:line,status:'ok'};
+      const key=recordKey(e); if(!seen.has(key)){seen.add(key);logs.push(e);added++;} continue;
+    }
+    if(p.length<7) continue;
     let r;
-    if(p[0].match(/^\d+\/\d+\/\d+$/)&&p[1].match(/^\d+:\d+/))
-      r=parseRowV16(p);
-    else if(p[0].match(/\d+\/\d+\/\d+\s+\d+:\d+/)&&(p[1]===''||!isNaN(parseFloat(p[1]))))
-      r=parseRowCurrent(p);
-    else
-      r=parseRowV1x(p);
-    const timestamp=`${r.date} ${r.time}`.trim();
-    const key=timestamp+'|'+(r.machine||'');
-    if(seen.has(key)) continue; seen.add(key);
-    const isPing=(!r.download_mbps&&!r.upload_mbps)&&
-      (r.ping_ms||((r.note||'').toLowerCase().includes('ping')));
-    logs.push({
-      _t:isPing?'ping':'data',
-      timestamp,machine:r.machine||'',os:r.os||'',platform:r.platform||r.os||'',
-      conn_type:r.conn_type||'',iface_name:r.iface_name||'',
-      status:r.status||'fail',ping_ms:r.ping_ms||'',
-      download_mbps:r.download_mbps||'',upload_mbps:r.upload_mbps||'',
-      note:(r.note||'').slice(0,28)
-    });
-    added++;
+    if(schema==='v23') r=parseRowV23(p);
+    else if(schema==='v16'||(p[0].match(/^\d+\/\d+\/\d+$/)&&p[1]?.match(/^\d+:\d+/))) r=parseRowV16(p);
+    else if(schema==='current'||(p[0].match(/\d+\/\d+\/\d+\s+\d+:\d+/)&&(p[1]===''||!isNaN(parseFloat(p[1]))))) r=parseRowCurrent(p);
+    else r=parseRowV1x(p);
+
+    const type=r.type==='full'?'data':r.type==='event'?'evt':r.type;
+    let e={_t:type,timestamp:r.timestamp||'',epoch:r.epoch||'',machine:r.machine||'',
+             os:r.platform||'',platform:r.platform||'',conn_type:r.conn_type||'',
+             iface_name:r.iface_name||'',status:r.status||'fail',ping_ms:r.ping_ms||'',
+             download_mbps:r.download_mbps||'',upload_mbps:r.upload_mbps||'',
+             note:r.note||'',server:r.server||''};
+    if(type==='evt') e._txt=r.note||'';
+    e=normalizeRecord(e);if(!e||!recordEpoch(e)) continue;
+    const key=recordKey(e); if(seen.has(key)) continue;
+    seen.add(key); logs.push(e); added++;
   }
   if(!added){ alert('No new entries found.'); return; }
-  logs.sort((a,b)=>(a.timestamp||a._txt||'').localeCompare(b.timestamp||b._txt||''));
+  logs.sort((a,b)=>recordEpoch(a)-recordEpoch(b));
   saveLogs(); rebuildLog(); updateStats(); updateCharts();
   alert(`Imported ${added} entries.`);
 }
 
 // ── button events ─────────────────────────────────
+function cancelActiveWork(){
+  runGeneration++;
+  pendingRequests.forEach(c=>c.abort());
+  if(cancelNdt7) cancelNdt7();
+}
 document.getElementById('btnPR').onclick=()=>{
-  if(testing) return;
-  paused=!paused;
+  stopped=false;paused=!paused;
   const btn=document.getElementById('btnPR');
   if(paused){
-    clearAllTimers(); nextPingAt=null; nextTestAt=null;
-    btn.textContent='Resume ▶';
+    cancelActiveWork();fullTestDueEpoch=null;
+    clearAllTimers(); clearInterval(urlCheckTimer); nextPingAt=null; nextTestAt=null;
+    btn.textContent='Resume >';
     setStatus('Paused','paused');
     addStateEvent('PAUSED');
   } else {
-    btn.textContent='Pause ◼';
+    btn.textContent='Pause ||';
     addStateEvent('RESUMED');
     startSchedules();
+    startUrlChecks();
     runPingCheck();
   }
 };
@@ -1366,10 +1693,11 @@ document.getElementById('btnNow').onclick=()=>runManualTest();
 document.getElementById('btnPing').onclick=()=>{ if(!testing&&!paused) runPingCheck(); };
 document.getElementById('btnPingToggle').onclick=()=>setPingVisible(!pingVisible);
 document.getElementById('btnStop').onclick=()=>{
-  clearAllTimers(); nextPingAt=null; nextTestAt=null; fullTestDueEpoch=null;
+  stopped=true;cancelActiveWork();
+  clearAllTimers(); clearInterval(urlCheckTimer); nextPingAt=null; nextTestAt=null; fullTestDueEpoch=null;
   paused=true;
-  document.getElementById('btnPR').textContent='Resume ▶';
-  addStateEvent('PAUSED');
+  document.getElementById('btnPR').textContent='Resume >';
+  addStateEvent('STOPPED');
   setStatus('Stopped','paused');
 };
 document.getElementById('btnExport').onclick=exportCSV;
@@ -1394,10 +1722,10 @@ function wireIntervalField(id){
   el.addEventListener('keydown',e=>{ if(e.key==='Enter') e.target.blur(); });
   el.addEventListener('blur',()=>{
     const v=parseFloat(el.value);
-    if(isNaN(v)||v<=0) el.value=id==='fldPingInterval'?DEFAULT_PING_MINS:DEFAULT_TEST_MINS;
+    if(!Number.isFinite(v)||v<=0||v>10080) el.value=id==='fldPingInterval'?DEFAULT_PING_MINS:DEFAULT_TEST_MINS;
     setPref(id==='fldPingInterval'?'ping_mins':'test_mins', parseFloat(el.value));
     if(!testing&&!paused){ clearAllTimers(); startSchedules(); }
-    if(id==='fldTestInterval') startUrlChecks(); // URL check interval tracks full test interval
+    if(id==='fldTestInterval'&&!paused) startUrlChecks(); // URL check interval tracks full test interval
   });
 }
 wireIntervalField('fldPingInterval');
@@ -1422,7 +1750,7 @@ function applyChartHeight(h){
   const resizer=document.getElementById('resizer');
   const container=resizer.parentElement;
   let startY=0, startH=0;
-  const saved=parseInt(localStorage.getItem(CHART_H_KEY));
+  let saved;try{saved=parseInt(localStorage.getItem(CHART_H_KEY));}catch{storageWarning();}
   applyChartHeight(isNaN(saved)?CHART_H_DEF:Math.min(CHART_H_MAX,Math.max(CHART_H_MIN,saved)));
   function onMove(y){
     const rect=container.getBoundingClientRect();
@@ -1434,7 +1762,7 @@ function applyChartHeight(h){
     resizer.classList.remove('dragging');
     document.body.style.userSelect='';
     const finalH=parseInt(document.getElementById('chartPanel').style.height);
-    localStorage.setItem(CHART_H_KEY,finalH);
+    try{localStorage.setItem(CHART_H_KEY,finalH);}catch{storageWarning();}
     document.removeEventListener('mousemove',onMouseMove);
     document.removeEventListener('mouseup',onMouseUp);
     document.removeEventListener('touchmove',onTouchMove);
@@ -1459,6 +1787,8 @@ function applyChartHeight(h){
 
 // ── URL monitor ───────────────────────────────────
 // Stored in URL_LSKEY — completely separate from main speed log (LSKEY)
+// Temporary diagnostic history: each target is logged separately.
+// ms is retained for diagnosis/export only; it is intentionally not displayed as site speed.
 // Each entry: {ts, url, state:'up'|'timeout'|'down', ms, conn_ok}
 
 function urlNormalize(raw){
@@ -1466,7 +1796,7 @@ function urlNormalize(raw){
   return /^https?:\/\//i.test(s)?s:'https://'+s;
 }
 
-function loadUrlLogs(){ try{return JSON.parse(localStorage.getItem(URL_LSKEY)||'[]');}catch{return[];} }
+function loadUrlLogs(){try{const a=JSON.parse(localStorage.getItem(URL_LSKEY)||'[]');return Array.isArray(a)?a:[];}catch{return[];}}
 function saveUrlLog(entry){
   try{
     const rows=loadUrlLogs();
@@ -1480,49 +1810,44 @@ function setUrlStatus(idx, state, ms){
   try{
     const el=document.getElementById('urlStatus'+idx); if(!el) return;
     if(state==='up'){
-      el.textContent=`UP  ${ms}ms`; el.className='url-status url-up';
+      el.textContent='UP'; el.className='url-status url-up';
     } else if(state==='timeout'){
       el.textContent='TIMEOUT';     el.className='url-status url-down';
     } else {
       // if our own connection is also down, we can't blame the remote
-      const note=lastPingOk?' (remote?)':' (local?)';
+      const note=lastPingOk===true?' (remote?)':lastPingOk===false?' (local?)':' (unknown)';
       el.textContent='DOWN'+note;   el.className='url-status url-down';
     }
   }catch(e){ console.warn('setUrlStatus',e); }
 }
 
+const urlBusy=new Set();
 async function checkUrl(idx){
+  if(paused||urlBusy.has(idx)) return;
+  const generation=runGeneration;
+  const raw=(urlTargets[idx]||'').trim();
+  if(!raw) return;
+  urlBusy.add(idx);
   try{
-    const raw=(urlTargets[idx]||'').trim();
-    if(!raw){ const el=document.getElementById('urlStatus'+idx); if(el) el.textContent='—'; return; }
-    const url=urlNormalize(raw);
-    const ctrl=new AbortController();
-    const tid=setTimeout(()=>ctrl.abort(), URL_TIMEOUT_MS);
-    const t0=Date.now();
-    let state, ms=0;
-    try{
-      await fetch(url,{method:'HEAD',mode:'no-cors',signal:ctrl.signal});
-      clearTimeout(tid); ms=Date.now()-t0; state='up';
-    }catch(e){
-      clearTimeout(tid); state=e.name==='AbortError'?'timeout':'down';
-    }
-    setUrlStatus(idx, state, ms);
-    saveUrlLog({ts:new Date().toLocaleString(),url:raw,state,ms,conn_ok:lastPingOk});
-  }catch(e){ console.warn('checkUrl',idx,e); }
+    const r=await probeUrl(raw);
+    if(generation!==runGeneration) return;
+    setUrlStatus(idx,r.state,r.ms);
+    saveUrlLog({ts:fmtTS(new Date()),...r,conn_ok:r.state==='up'?true:null,round:'initial'});
+  }catch(err){if(err.name!=='AbortError') console.warn('URL check',err);}
+  finally{urlBusy.delete(idx);}
 }
-
-function checkAllUrls(){ [0,1,2].forEach(i=>checkUrl(i)); }
-
+function checkAllUrls(){if(!paused) [0,1,2].forEach(i=>checkUrl(i));}
 function startUrlChecks(){
   clearInterval(urlCheckTimer);
+  if(paused) return;
   checkAllUrls();
-  urlCheckTimer=setInterval(checkAllUrls, getTestInterval()*60_000);
+  urlCheckTimer=setInterval(checkAllUrls,getTestInterval()*60_000);
 }
 
 function initUrlPanel(){
   try{
     const prefs=loadPrefs();
-    urlTargets=prefs.url_targets||[...DEFAULT_URL_TARGETS];
+    urlTargets=Array.isArray(prefs.url_targets)?prefs.url_targets:[...DEFAULT_URL_TARGETS];
     for(let i=0;i<3;i++){
       const inp=document.getElementById('urlInput'+i); if(!inp) continue;
       inp.value=urlTargets[i]||'';
@@ -1531,17 +1856,134 @@ function initUrlPanel(){
   }catch(e){ console.warn('initUrlPanel',e); }
 }
 
+function normalizeConnOk(v){return v===true||v==='true'?'true':v===false||v==='false'?'false':'';}
 function exportUrlLog(){
   const rows=loadUrlLogs(); if(!rows.length){ alert('No URL log entries yet.'); return; }
-  const hdr='timestamp,url,state,ms,conn_ok';
-  const body=rows.map(r=>[r.ts||'',r.url||'',r.state||'',r.ms||'',r.conn_ok==null?'':r.conn_ok].join(',')).join('\n');
+  const hdr='timestamp,url,state,ms,conn_ok,round';
+  const body=rows.map(r=>[
+    r.ts||'',r.url||'',r.state||'',r.ms??'',
+    normalizeConnOk(r.conn_ok),r.round||''
+  ].map(csvField).join(',')).join('\n');
   const blob=new Blob([hdr+'\n'+body],{type:'text/csv'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-  const mac=getMachine().replace(/\s+/g,'_');
-  const now=new Date(); const q=Math.ceil((now.getMonth()+1)/3);
-  a.download=`urlcheck_${mac}_${now.getFullYear()}-Q${q}.csv`;
+  const a=document.createElement('a');
+  const url=URL.createObjectURL(blob);
+  a.href=url;
+  a.download=`urlcheck_${safeMachine()}_${quarterName()}.csv`;
   a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+
+// ── background collector logs ─────────────────────
+// Read through script tags, which work from file://. Rows are marked _src and rebuilt on
+// each reload; they are never saved to localStorage or exported, since Dropbox holds them.
+const COLLECTOR_RELOAD_MS=5*60_000;
+const PING_BUCKET_SECS=15*60;
+const EVENT_LABEL={internet:'INTERNET OUTAGE',local:'ROUTER NOT ANSWERING',no_network:'NOT ON A NETWORK',captive:'SIGN-IN PAGE BLOCKING'};
+let collectorData={},annotations=[];
+function localDateMs(text){const m=String(text).match(/^(\d{4})-(\d+)-(\d+)$/);return m?new Date(+m[1],m[2]-1,+m[3]).getTime():0;}
+function annotationRecord(a){
+  const when=fmtTS(new Date(a.startMs));
+  return {_t:'evt',_src:'annotation',status:'ok',timestamp:when,epoch:a.startMs/1000,_txt:`# ${when} [${a.id}] ${a.text} (${a.confidence})`};
+}
+// Draws annotations behind the speed graph: a band for a span, a dashed line for a date.
+const annotationLines={id:'annotationLines',beforeDatasetsDraw(chart){
+  const {ctx,chartArea:area,scales:{x}}=chart;
+  ctx.save();ctx.beginPath();ctx.rect(area.left,area.top,area.width,area.height);ctx.clip();
+  ctx.font='10px monospace';ctx.textBaseline='top';
+  for(const a of annotations){
+    const x0=x.getPixelForValue(a.startMs);
+    if(a.endMs){ctx.fillStyle='rgba(200,176,96,.14)';ctx.fillRect(x0,area.top,x.getPixelForValue(a.endMs)-x0,area.height);}
+    ctx.strokeStyle=COL_PING;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(x0,area.top);ctx.lineTo(x0,area.bottom);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle=COL_PING;ctx.fillText(a.id,x0+3,area.top+2);
+  }
+  ctx.restore();
+}};
+function loadScriptFile(src){
+  return new Promise(res=>{const s=document.createElement('script');s.src=src+'?t='+Date.now();
+    s.onload=()=>{s.remove();res(true);};s.onerror=()=>{s.remove();res(false);};document.head.append(s);});
+}
+function fmtDuration(secs){
+  if(secs<90) return Math.round(secs)+' s';
+  if(secs<5400) return Math.round(secs/60)+' min';
+  return (secs/3600).toFixed(1)+' h';
+}
+function medianOf(values){const v=[...values].sort((a,b)=>a-b);return v[Math.floor(v.length/2)];}
+function collectorRecords(d){
+  const rows=[],base=epoch=>({timestamp:fmtTS(new Date(epoch*1000)),epoch,machine:d.machine,platform:'collector',_src:'collector'});
+  for(const r of d.speed){
+    const epoch=Number(r[0]);
+    rows.push({...base(epoch),_t:'data',status:r[1]==='drop'?'dropout':r[1],download_mbps:r[3],upload_mbps:r[4],ping_ms:r[5],
+      server:r[6],network:r[7],conn_type:r[8],note:r[9],provider:r[2]});
+  }
+  // A check every minute is too many log rows, so online checks become one median per period.
+  const buckets=new Map();
+  for(const c of d.recent){
+    if(c[1]!=='online'||c[2]==='') continue;
+    const key=Math.floor(c[0]/PING_BUCKET_SECS)*PING_BUCKET_SECS+'|'+c[3];
+    (buckets.get(key)||buckets.set(key,[]).get(key)).push(Number(c[2]));
+  }
+  for(const [key,values] of buckets){
+    const [start,network]=key.split('|');
+    rows.push({...base(Number(start)),_t:'ping',status:'ok',ping_ms:medianOf(values),network,conn_ok:true});
+  }
+  const recent_from=d.recent.length?d.recent[0][0]:Infinity;
+  for(const h of d.hours){
+    if(h[0]+3600<=recent_from&&h[5]!=null) rows.push({...base(h[0]),_t:'ping',status:'ok',ping_ms:h[5],network:h[1],conn_ok:true,_noLog:true});
+  }
+  for(const e of d.events){
+    if(e[2]==='unmonitored') continue;
+    const text=`${EVENT_LABEL[e[2]]||e[2]} ${fmtDuration(e[1]-e[0])}${e[4]?' so far':''}`;
+    if(e[2]==='internet'||e[2]==='local') rows.push({...base(e[0]),_t:'ping',status:'dropout',ping_ms:'',network:e[3],note:text});
+    else rows.push({...base(e[0]),_t:'evt',status:'ok',network:e[3],_txt:`# ${fmtTS(new Date(e[0]*1000))} ${text} ${e[3]||''}`});
+  }
+  return rows;
+}
+function refreshFilterOptions(){
+  const machines=Object.values(collectorData).sort((a,b)=>lastDataEpoch(b)-lastDataEpoch(a));
+  const mSel=document.getElementById('fltMachine'),nSel=document.getElementById('fltNetwork');
+  const keep_machine=mSel.value,first_load=!mSel.options.length;
+  mSel.innerHTML='<option value="">All computers</option>'+machines.map(m=>`<option>${esc(m.machine)}</option>`).join('');
+  if(first_load&&machines.length) mSel.value=machines[0].machine;
+  else if(machines.some(m=>m.machine===keep_machine)) mSel.value=keep_machine;
+  const keep_net=nSel.value,nets=new Set();
+  logs.forEach(e=>{if(e.network&&(!mSel.value||e.machine===mSel.value)) nets.add(e.network);});
+  nSel.innerHTML='<option value="">All networks</option>'+[...nets].sort().map(n=>`<option>${esc(n)}</option>`).join('');
+  if(nets.has(keep_net)) nSel.value=keep_net;
+  const tSel=document.getElementById('fltTool'),keep_tool=tSel.value,tools=new Set();
+  logs.forEach(e=>{if(e.provider&&(!mSel.value||e.machine===mSel.value)) tools.add(e.provider);});
+  tSel.innerHTML='<option value="">All tools</option>'+[...tools].sort().map(t=>`<option>${esc(t)}</option>`).join('');
+  if(tools.has(keep_tool)) tSel.value=keep_tool;
+}
+function visibleLogs(){
+  const machine=document.getElementById('fltMachine').value,net=document.getElementById('fltNetwork').value,tool=document.getElementById('fltTool').value;
+  if(!machine&&!net&&!tool) return logs;
+  return logs.filter(e=>!e._src||e._src==='annotation'||((!machine||e.machine===machine)&&(!net||e.network===net)&&(!tool||e._t!=='data'||e.provider===tool)));
+}
+function lastDataEpoch(d){return Math.max(Number(d.speed.at(-1)?.[0]||0),Number(d.recent.at(-1)?.[0]||0));}
+function collectorStatus(){
+  const newest=Object.values(collectorData).map(lastDataEpoch);
+  if(!newest.length) return 'No background logs found -- see README to install the collector';
+  return 'Background logging: last data '+fmtTS(new Date(Math.max(...newest)*1000));
+}
+async function loadCollector(){
+  window.SPEEDMON_MACHINES=null;
+  await loadScriptFile('viewer_data/machines.js');
+  window.SPEEDMON_DATA={};
+  await loadScriptFile('viewer_data/annotations.js');
+  annotations=(window.SPEEDMON_ANNOTATIONS||[]).map(a=>({...a,startMs:localDateMs(a.start),endMs:a.end?localDateMs(a.end):null})).filter(a=>a.startMs);
+  await Promise.all((window.SPEEDMON_MACHINES||[]).map(m=>loadScriptFile('viewer_data/'+encodeURIComponent(m)+'.js')));
+  collectorData=window.SPEEDMON_DATA;
+  const local=logs.filter(e=>!e._src);
+  logs=[...local,...annotations.map(annotationRecord),...Object.values(collectorData).flatMap(collectorRecords).map(normalizeRecord).filter(Boolean)]
+    .sort((a,b)=>recordEpoch(a)-recordEpoch(b));
+  refreshFilterOptions();
+  rebuildLog();updateStats();updateCharts();
+  if(!testing&&!pinging) updateIdleStatus();
+}
+function changeFilter(){refreshFilterOptions();rebuildLog();updateStats();updateCharts();}
+document.getElementById('fltMachine').onchange=changeFilter;
+document.getElementById('fltNetwork').onchange=changeFilter;
+document.getElementById('fltTool').onchange=changeFilter;
 
 // ── init ──────────────────────────────────────────
 function init(){
@@ -1551,12 +1993,15 @@ function init(){
   if(prefs.test_mins)     document.getElementById('fldTestInterval').value=prefs.test_mins;
   logs=loadLogs();
   rebuildLog(); renderNetDisplay();
-  initCharts(); updateStats(); updateCharts();
+  if(typeof Chart!=='undefined') initCharts();
+  else setStatus('Chart library unavailable — monitoring still works');
+  updateStats(); updateCharts();
+  loadCollector();setInterval(loadCollector,COLLECTOR_RELOAD_MS);
   try{ initUrlPanel(); }catch(e){ console.warn('URL panel init failed',e); }
   refreshNetMeta().then(()=>{
-    addStateEvent('STARTED');
+    if(paused) return;
     startSchedules();
-    runPingCheck();   // immediate ping on load; full test only fires at scheduled interval
+    runPingCheck();   // one immediate reading; repeats only on request or a network change
     try{ startUrlChecks(); }catch(e){ console.warn('URL checks failed',e); }
   });
   setInterval(refreshNetMeta, 120000);
