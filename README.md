@@ -60,12 +60,8 @@ within one tool only. In October 2026 the old Python tool, Cloudflare and M-Lab 
 
 ### Planned, when the Linux box is ready
 
-- Run the collector on the box's host OS, wired to the router, as the long-term reference.
-- Per-computer `speed_hours`: the box about every 4 hours, laptops rare or manual.
-- Temporary watch mode (`watch 24h`): checks every 15 seconds, self-expiring, auto-annotated.
-  Speed tests only after an outage, on sustained high response time, or on a network change,
-  with a daily cap, and each logs why it ran.
-- Then: Place field, status line, monthly summary, time-of-day heatmap, before/after Vero.
+Objective, method and steps are in [docs/linux_box_plan.md](docs/linux_box_plan.md): the collector on
+the box's host OS as the wired reference, per-computer speed intervals, and a self-expiring watch mode.
 
 ### Imported history
 
