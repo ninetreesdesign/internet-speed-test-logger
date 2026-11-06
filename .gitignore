@@ -30,3 +30,7 @@ speedmon_launchd.log
 data/
 viewer_data/
 collector/bin/
+
+# Local annotations and optional desktop experiments
+annotations.csv
+LiveCode_Desktop/

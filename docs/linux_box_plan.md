@@ -1,10 +1,10 @@
 # Plan: run the background collector on the Linux box
 
-Status: waiting for the box (decided 2026-11-04). Owner: David and Claude Code.
+Status: waiting for the box (decided 2026-11-04). Implementation deferred until a Linux reference host is available.
 
 ## Objective
 Get a stable long-term record of the home internet connection: whether it works, is impaired,
-varies by time of day, or drops out, with a clean before/after when Vero fiber replaces Comcast.
+varies by time of day, or drops out, with a clean before/after when fiber replaces cable.
 The box is the reference: it stays put, never sleeps, and is wired. Laptops then mostly answer
 "how is it here?", such as speeds around the property.
 
@@ -18,7 +18,7 @@ The box is the reference: it stays put, never sleeps, and is wired. Laptops then
 - Optional: a small UPS on the box and router, so power cuts are logged rather than left as gaps.
 
 ## Steps
-Aim to finish before Vero is installed.
+Aim to finish before changing internet service.
 
 1. Confirm the folder synced, then install, using `linux-amd64` or `linux-arm64` as fits:
    `collector/bin/speedmon-collector-linux-amd64 install --machine "<box name>"`
@@ -53,5 +53,4 @@ on one computer.
 
 ## What this enables afterward
 Box vs. laptop separates Wi-Fi from line problems. Two computers failing together confirms a real
-outage. Then build: Place field, status line, monthly summary, time-of-day heatmap, before/after
-Vero. The later LiveCode viewer reads the same logs.
+outage. Then build: Place field, status line, monthly summary, time-of-day heatmap, before/after service changes. The later LiveCode viewer reads the same logs.
